@@ -1,0 +1,855 @@
+import json
+import re
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+import tkinter as tk
+import tkinter.font as tkfont
+from tkinter import filedialog
+from tkinter import ttk
+from typing import Any
+
+from rig_adapter import RigAdapter
+from serial_transport import SerialTransport
+
+def _rounded_button(
+    parent: tk.Widget,
+    text: str,
+    command: Any,
+    font: tuple[str, int, str] = ("Segoe UI", 10, "bold"),
+    bg: str = "#cfe8ff",
+    active_bg: str = "#b8dcff",
+    fg: str = "#0d2a45",
+    radius: int = 12,
+    padx: int = 12,
+    pady: int = 6,
+) -> tk.Canvas:
+    font_obj = tkfont.Font(font=font)
+    text_w = font_obj.measure(text)
+    text_h = font_obj.metrics("linespace")
+    width = text_w + (padx * 2)
+    height = text_h + (pady * 2)
+    corner = max(2, min(radius, width // 2, height // 2))
+    parent_bg = _widget_bg(parent)
+
+    canvas = tk.Canvas(parent, width=width, height=height + 2, bg=parent_bg, highlightthickness=0, bd=0, cursor="hand2")
+
+    def _draw_round(x: int, y: int, w: int, h: int, r: int, fill: str, outline: str) -> None:
+        points = [
+            x + r, y,
+            x + w - r, y,
+            x + w, y,
+            x + w, y + r,
+            x + w, y + h - r,
+            x + w, y + h,
+            x + w - r, y + h,
+            x + r, y + h,
+            x, y + h,
+            x, y + h - r,
+            x, y + r,
+            x, y,
+        ]
+        canvas.create_polygon(points, smooth=True, splinesteps=16, fill=fill, outline=outline)
+
+    def _paint(fill_color: str, pressed: bool = False) -> None:
+        canvas.delete("all")
+        y_offset = 1 if pressed else 0
+        text_offset = 1 if pressed else 0
+        shadow_color = "#7da6cf"
+        border_color = "#6f98c2"
+
+        if not pressed:
+            _draw_round(0, 2, width, height - 2, corner, shadow_color, shadow_color)
+
+        _draw_round(0, y_offset, width, height - 2, corner, fill_color, border_color)
+
+        if not pressed:
+            # top highlight for raised effect
+            canvas.create_line(corner + 2, 2, width - corner - 2, 2, fill="#eef7ff", width=1)
+
+        canvas.create_text(width // 2, (height - 2) // 2 + text_offset, text=text, font=font, fill=fg)
+
+    _paint(bg, pressed=False)
+
+    def _press(_: Any) -> None:
+        _paint(active_bg, pressed=True)
+
+    def _release(event: Any) -> None:
+        inside = 0 <= event.x <= width and 0 <= event.y <= height
+        _paint(bg, pressed=False)
+        if inside:
+            command()
+
+    def _enter(_: Any) -> None:
+        _paint(active_bg, pressed=False)
+
+    def _leave(_: Any) -> None:
+        _paint(bg, pressed=False)
+
+    canvas.bind("<ButtonPress-1>", _press)
+    canvas.bind("<ButtonRelease-1>", _release)
+    canvas.bind("<Enter>", _enter)
+    canvas.bind("<Leave>", _leave)
+    return canvas
+
+
+def _fmt_hz(hz: int) -> str:
+    grouped_hz = f"{hz:,}".replace(",", ".")
+    return f"{grouped_hz} Hz"
+
+
+def _widget_bg(parent: tk.Widget) -> str:
+    try:
+        return str(parent.cget("bg"))
+    except tk.TclError:
+        pass
+
+    try:
+        style = ttk.Style(parent)
+        for style_name in ("TFrame", "TLabel", "."):
+            color = style.lookup(style_name, "background")
+            if color:
+                return str(color)
+    except Exception:
+        pass
+
+    try:
+        return str(parent.winfo_toplevel().cget("bg"))
+    except Exception:
+        return "#f0f0f0"
+
+
+class RigMonitorWindow:
+    def __init__(self, rig: RigAdapter, refresh_ms: int = 500) -> None:
+        self._rig = rig
+        self._refresh_ms = max(100, refresh_ms)
+
+        self._root = tk.Tk()
+        self._root.title("vfoStepsKnob - Radio Monitor")
+        self._root.geometry("760x500")
+        self._root.minsize(620, 380)
+
+        self._radio_type_var = tk.StringVar(value="-")
+        self._profile_file_var = tk.StringVar(value="-")
+        self._loaded_models_var = tk.StringVar(value="-")
+        self._vfo_a_name_var = tk.StringVar(value="VFO A")
+        self._vfo_b_name_var = tk.StringVar(value="VFO B")
+        self._vfo_a_var = tk.StringVar(value="-")
+        self._vfo_b_var = tk.StringVar(value="-")
+        self._current_freq_var = tk.StringVar(value="-")
+        self._vfo_route_var = tk.StringVar(value="-")
+        self._knob_target_var = tk.StringVar(value="-")
+        self._split_var = tk.StringVar(value="-")
+        self._omnirig_report_var = tk.StringVar(value="OmniRig: Checking...")
+        self._knob_report_var = tk.StringVar(value="Knob: Not connected")
+        self._debug_var = tk.StringVar(value="Debug: -")
+        self._radio_type_name_label: tk.Label | None = None
+        self._radio_type_value_label: tk.Label | None = None
+        self._vfo_a_name_label: tk.Label | None = None
+        self._vfo_a_value_label: tk.Label | None = None
+        self._vfo_a_name_container: tk.Frame | None = None
+        self._vfo_b_name_label: tk.Label | None = None
+        self._vfo_b_value_label: tk.Label | None = None
+        self._vfo_b_name_container: tk.Frame | None = None
+        self._omnirig_report_label: tk.Label | None = None
+        self._knob_report_label: tk.Label | None = None
+        self._knob_status_until: float = 0.0
+        self._last_knob_probe: float = 0.0
+        self._last_knob_port: str | None = None
+        self._probe_running: bool = False
+        # Debounce variables for N/A flicker
+        self._freq_fail_count: int = 0
+        self._freq_fail_threshold: int = 3
+        # Debounce variables for omnirig report
+        self._omnirig_fail_count: int = 0
+        self._omnirig_fail_threshold: int = 3
+        self._last_omnirig_report: str = ""
+        self._row_default_bg: str | None = None
+        self._calib_instruction_var = tk.StringVar(
+            value="Calibration Wizard: press Start Calibration to begin guided 4-state testing."
+        )
+        self._calib_progress_var = tk.StringVar(value="Calibration: idle")
+        self._calib_phase = "idle"
+        self._calib_index = -1
+        self._calib_current: dict[str, Any] | None = None
+        self._calib_records: list[dict[str, Any]] = []
+        self._calib_scenarios: list[dict[str, str]] = [
+            {
+                "id": "off_knob_a",
+                "title": "1/4 Split OFF, knob on A",
+                "setup": "Set split OFF and make the real radio knob control VFO A.",
+            },
+            {
+                "id": "off_knob_b",
+                "title": "2/4 Split OFF, knob on B",
+                "setup": "Set split OFF and make the real radio knob control VFO B.",
+            },
+            {
+                "id": "on_start_a",
+                "title": "3/4 Split ON, start from A",
+                "setup": "Start from knob on A, then enable split.",
+            },
+            {
+                "id": "on_start_b",
+                "title": "4/4 Split ON, start from B",
+                "setup": "Start from knob on B, then enable split.",
+            },
+        ]
+
+        self._build_layout()
+
+    def _build_layout(self) -> None:
+        self._root.columnconfigure(0, weight=1)
+        frame = ttk.Frame(self._root, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(2, weight=0)
+        frame.columnconfigure(3, weight=0)
+
+        title = ttk.Label(frame, text="HF Radio Live Monitor", font=("Segoe UI", 17, "bold"))
+        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        self._radio_type_name_label, self._radio_type_value_label = self._row(frame, 1, "Radio Type", self._radio_type_var)
+        self._vfo_a_name_container = tk.Frame(frame)
+        self._vfo_a_name_container.grid(row=2, column=0, sticky="w", pady=3)
+        self._vfo_a_value_label = tk.Label(frame, textvariable=self._vfo_a_var, font=("Consolas", 12), anchor="w")
+        self._vfo_a_value_label.grid(row=2, column=1, sticky="w", pady=3)
+        self._render_vfo_a_name_label()
+        knob_widget = self._build_knob_widget(frame)
+        knob_widget.grid(row=2, column=3, rowspan=2, sticky="e", padx=(16, 0), pady=2)
+        self._vfo_b_name_container = tk.Frame(frame)
+        self._vfo_b_name_container.grid(row=3, column=0, sticky="w", pady=3)
+        self._vfo_b_value_label = tk.Label(frame, textvariable=self._vfo_b_var, font=("Consolas", 12), anchor="w")
+        self._vfo_b_value_label.grid(row=3, column=1, sticky="w", pady=3)
+        self._render_vfo_b_name_label()
+        self._row(frame, 4, "VFO Route", self._vfo_route_var)
+        self._row(frame, 5, "Split Mode", self._split_var)
+        self._row(frame, 6, "Current Knob Frequency", self._current_freq_var)
+
+        if self._radio_type_name_label is not None:
+            self._radio_type_name_label.configure(font=("Segoe UI", 12, "bold"))
+        if self._radio_type_value_label is not None:
+            self._radio_type_value_label.configure(font=("Consolas", 13, "bold"))
+
+        separator = ttk.Separator(frame, orient="horizontal")
+        separator.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(12, 8))
+
+        self._omnirig_report_label = tk.Label(
+            frame,
+            textvariable=self._omnirig_report_var,
+            fg="#b00020",
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+        )
+        self._omnirig_report_label.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(2, 2))
+
+        self._knob_report_label = tk.Label(
+            frame,
+            textvariable=self._knob_report_var,
+            fg="#b00020",
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+        )
+        self._knob_report_label.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(2, 2))
+
+        bottom_sep = ttk.Separator(frame, orient="horizontal")
+        bottom_sep.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(12, 8))
+
+        self._row(frame, 11, "Profile File", self._profile_file_var)
+
+        profile_button = ttk.Button(frame, text="Browse Profile INI", command=self._browse_profile_file)
+        profile_button.grid(row=12, column=0, sticky="w", pady=(8, 0))
+
+        if self._vfo_b_name_container is not None:
+            self._row_default_bg = self._vfo_b_name_container.cget("bg")
+
+    def _set_na_values(self) -> None:
+        self._freq_fail_count = 0  # Reset fail counter when N/A is set
+        self._radio_type_var.set("N/A")
+        self._vfo_a_var.set("N/A")
+        self._vfo_b_var.set("N/A")
+        self._current_freq_var.set("N/A")
+        self._vfo_route_var.set("N/A")
+        self._knob_target_var.set("N/A")
+        self._split_var.set("N/A")
+
+    def _refresh_row_labels(self, split: bool | None = None) -> None:
+        row_a_label, row_b_label = self._rig.get_row_labels()
+        if self._rig.uses_display_slot_mode():
+            # IC-7300 style: OmniRig always puts knob freq in slot A regardless of A/B.
+            if split is True:
+                row_a_label = "Knob Frequency (RX)"
+                row_b_label = "Sub Frequency (TX)"
+            elif split is False:
+                row_a_label = "Knob Frequency (RX / TX)"
+                row_b_label = "Sub Frequency (standby)"
+        else:
+            # Generic radio: labels are fixed (Knob Frequency top, Sub Frequency bottom).
+            # Hz values are swapped in _refresh when the knob is on VFO B.
+            if split is True:
+                knob_role = self._rig.get_split_knob_role()
+                if knob_role == "tx":
+                    row_a_label = "Knob Frequency (TX)"
+                    row_b_label = "Sub Frequency (RX)"
+                elif knob_role == "rx":
+                    row_a_label = "Knob Frequency (RX)"
+                    row_b_label = "Sub Frequency (TX)"
+                else:
+                    knob_vfo = self._rig.get_knob_display_vfo()
+                    route = self._rig.get_vfo_route()  # e.g. "AB": route[0]=RX, route[1]=TX
+                    if route and len(route) == 2 and knob_vfo == route[1]:
+                        row_a_label = "Knob Frequency (TX)"
+                        row_b_label = "Sub Frequency (RX)"
+                    else:
+                        row_a_label = "Knob Frequency (RX)"
+                        row_b_label = "Sub Frequency (TX)"
+            elif split is False:
+                row_a_label = "Knob Frequency (RX / TX)"
+                row_b_label = "Sub Frequency"
+            else:
+                row_a_label = "Knob Frequency"
+                row_b_label = "Sub Frequency"
+        self._vfo_a_name_var.set(row_a_label)
+        self._vfo_b_name_var.set(row_b_label)
+
+        self._render_vfo_a_name_label()
+        self._render_vfo_b_name_label()
+
+    def _render_vfo_a_name_label(self) -> None:
+        if self._vfo_a_name_container is None:
+            return
+
+        for child in self._vfo_a_name_container.winfo_children():
+            child.destroy()
+
+        text = self._vfo_a_name_var.get()
+        base_font = ("Segoe UI", 11, "bold")
+        match = re.fullmatch(r"Knob Frequency \((RX)(\s*/\s*)(TX)\)", text)
+        if match:
+            tk.Label(self._vfo_a_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(self._vfo_a_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
+            tk.Label(self._vfo_a_name_container, text=match.group(2), font=base_font, anchor="w").grid(row=0, column=2, sticky="w")
+            tk.Label(self._vfo_a_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=3, sticky="w")
+            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w")
+            self._vfo_a_name_label.grid(row=0, column=4, sticky="w")
+            return
+
+        match = re.fullmatch(r"Knob Frequency \((RX)\)", text)
+        if match:
+            tk.Label(self._vfo_a_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(self._vfo_a_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
+            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w")
+            self._vfo_a_name_label.grid(row=0, column=2, sticky="w")
+            return
+
+        match = re.fullmatch(r"Knob Frequency \((TX)\)", text)
+        if match:
+            tk.Label(self._vfo_a_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(self._vfo_a_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=1, sticky="w")
+            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w")
+            self._vfo_a_name_label.grid(row=0, column=2, sticky="w")
+            return
+
+        self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=text + ":", font=base_font, anchor="w")
+        self._vfo_a_name_label.grid(row=0, column=0, sticky="w")
+
+    def _render_vfo_b_name_label(self) -> None:
+        if self._vfo_b_name_container is None:
+            return
+
+        for child in self._vfo_b_name_container.winfo_children():
+            child.destroy()
+
+        text = self._vfo_b_name_var.get()
+        base_font = ("Segoe UI", 11, "bold")
+        match = re.fullmatch(r"Knob Frequency \((RX)(\s*/\s*)(TX)\)", text)
+        if match:
+            tk.Label(self._vfo_b_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
+            tk.Label(self._vfo_b_name_container, text=match.group(2), font=base_font, anchor="w").grid(row=0, column=2, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=3, sticky="w")
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
+            self._vfo_b_name_label.grid(row=0, column=4, sticky="w")
+            return
+
+        match = re.fullmatch(r"Knob Frequency \((RX)\)", text)
+        if match:
+            tk.Label(self._vfo_b_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
+            self._vfo_b_name_label.grid(row=0, column=2, sticky="w")
+            return
+
+        match = re.fullmatch(r"Sub Frequency \((TX)\)", text)
+        if match:
+            tk.Label(self._vfo_b_name_container, text="Sub Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=1, sticky="w")
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
+            self._vfo_b_name_label.grid(row=0, column=2, sticky="w")
+            return
+
+        match = re.fullmatch(r"Sub Frequency \((RX)\)", text)
+        if match:
+            tk.Label(self._vfo_b_name_container, text="Sub Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
+            self._vfo_b_name_label.grid(row=0, column=2, sticky="w")
+            return
+
+        self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=text + ":", font=base_font, anchor="w")
+        self._vfo_b_name_label.grid(row=0, column=0, sticky="w")
+
+    def _apply_split_visual_effect(self, split: bool | None) -> None:
+        if self._row_default_bg is None:
+            return
+
+        a_fg = "#111111"
+        b_fg = "#111111"
+        b_bg = self._row_default_bg
+
+        if split is False:
+            b_fg = "#8a8a8a"
+
+        if self._vfo_a_name_label is not None:
+            self._vfo_a_name_label.configure(fg=a_fg, bg=self._row_default_bg)
+        if self._vfo_a_value_label is not None:
+            self._vfo_a_value_label.configure(fg=a_fg, bg=self._row_default_bg)
+        if self._vfo_b_name_label is not None:
+            self._vfo_b_name_label.configure(fg=b_fg, bg=b_bg)
+        if self._vfo_b_value_label is not None:
+            self._vfo_b_value_label.configure(fg=b_fg, bg=b_bg)
+
+    def _refresh_profile_file_label(self) -> None:
+        self._profile_file_var.set(Path(self._rig.get_profile_ini_path()).name)
+
+    def _refresh_loaded_models_label(self) -> None:
+        models = self._rig.get_supported_radio_models()
+        self._loaded_models_var.set(", ".join(models) if models else "(none listed in profile file)")
+
+    def _browse_profile_file(self) -> None:
+        current = Path(self._rig.get_profile_ini_path())
+        initial_dir = str(current.parent) if current.parent.exists() else str(Path(__file__).resolve().parents[1])
+        selected = filedialog.askopenfilename(
+            title="Select radio profile INI",
+            initialdir=initial_dir,
+            filetypes=[("INI files", "*.ini"), ("All files", "*.*")],
+        )
+        if not selected:
+            return
+        try:
+            models = self._rig.set_profile_ini_path(selected)
+            self._refresh_profile_file_label()
+            self._refresh_loaded_models_label()
+            self._refresh_row_labels()
+            if models:
+                self._set_knob_report(f"Loaded profile file ({len(models)} models)", ok=True)
+            else:
+                self._set_knob_report("Profile file loaded (no supported models listed)", ok=False)
+        except Exception as exc:
+            self._set_knob_report(f"Profile load error ({exc})", ok=False)
+        self._knob_status_until = time.monotonic() + 3.0
+
+    def _set_omnirig_report(self, text: str, ok: bool) -> None:
+        self._omnirig_report_var.set(f"OmniRig: {text}")
+        if self._omnirig_report_label is not None:
+            self._omnirig_report_label.configure(fg="#0a7a32" if ok else "#b00020")
+
+    def _set_knob_report(self, text: str, ok: bool) -> None:
+        self._knob_report_var.set(f"Knob: {text}")
+        if self._knob_report_label is not None:
+            self._knob_report_label.configure(fg="#0a7a32" if ok else "#b00020")
+
+    def _detect_knob_port_async(self) -> None:
+        if self._probe_running:
+            return
+        self._probe_running = True
+
+        def worker():
+            probe_errors: list[str] = []
+            found_port: str | None = None
+            for port in SerialTransport.candidate_ports():
+                matched, detail = SerialTransport.probe_device_identity_details(port, baudrate=115200)
+                if matched:
+                    found_port = port
+                    break
+                if detail:
+                    probe_errors.append(f"{port}: {detail}")
+            if found_port is not None:
+                self._root.after(0, lambda p=found_port: self._on_knob_port_detected(p, None))
+            elif probe_errors:
+                self._root.after(0, lambda e=probe_errors[0]: self._on_knob_port_detected(None, e))
+            else:
+                self._root.after(0, lambda: self._on_knob_port_detected(None, None))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_knob_port_detected(self, port: str | None, error: str | None) -> None:
+        self._probe_running = False
+        if port:
+            self._last_knob_port = port
+            self._set_knob_report(f"Knob detected on {port}", ok=True)
+        elif error:
+            self._last_knob_port = None
+            self._set_knob_report(f"Knob detection error: {error}", ok=False)
+        else:
+            self._last_knob_port = None
+            self._set_knob_report("Knob not found", ok=False)
+
+    def _refresh_knob_connection_status(self) -> None:
+        if time.monotonic() < self._knob_status_until:
+            return
+
+        now = time.monotonic()
+        if now - self._last_knob_probe < 1.0:
+            return
+        self._last_knob_probe = now
+
+        # If a port was already confirmed, just verify it is still listed —
+        # no need to open the port again (which resets the Arduino via DTR).
+        if self._last_knob_port is not None:
+            available = SerialTransport.candidate_ports()
+            if self._last_knob_port in available:
+                return  # Still present; keep showing "connected"
+            # Port disappeared — clear state and fall through to a full probe.
+            self._last_knob_port = None
+            self._set_knob_report("Knob disconnected", ok=False)
+
+        self._detect_knob_port_async()
+
+    @staticmethod
+    def _slugify(value: str) -> str:
+        cleaned = [ch.lower() if ch.isalnum() else "_" for ch in value]
+        slug = "".join(cleaned).strip("_")
+        return slug or "radio"
+
+    def _calibration_step_text(self) -> str:
+        if self._calib_index < 0 or self._calib_index >= len(self._calib_scenarios):
+            return "Calibration finished."
+        scenario = self._calib_scenarios[self._calib_index]
+        if self._calib_phase == "await_state":
+            return f"{scenario['title']}: {scenario['setup']} Then press Capture State."
+        if self._calib_phase == "await_real":
+            return (
+                f"{scenario['title']}: turn the REAL radio knob by one step, then press Mark: Changed A or Mark: Changed B."
+            )
+        if self._calib_phase == "await_software":
+            return (
+                f"{scenario['title']}: click Software Knob +1 kHz once, then press Mark: Changed A or Mark: Changed B."
+            )
+        return "Calibration idle. Press Start Calibration."
+
+    def _capture_live_snapshot(self) -> dict[str, Any]:
+        split = self._rig.read_split_mode()
+        route = self._rig.get_vfo_route()
+        active = self._rig.get_active_vfo()
+        knob_display = self._rig.get_knob_display_vfo()
+        knob_command = self._rig.get_knob_command_vfo()
+        freq_a = self._rig.read_frequency("A")
+        freq_b = self._rig.read_frequency("B")
+        return {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "radio_type": self._rig.get_radio_type(),
+            "split": split,
+            "route": route,
+            "active_vfo": active,
+            "knob_display_vfo": knob_display,
+            "knob_command_vfo": knob_command,
+            "freq_a": freq_a,
+            "freq_b": freq_b,
+        }
+
+    def _start_calibration(self) -> None:
+        self._calib_records = []
+        self._calib_current = None
+        self._calib_index = 0
+        self._calib_phase = "await_state"
+        self._calib_instruction_var.set(self._calibration_step_text())
+        self._calib_progress_var.set("Calibration: scenario 1/4 ready")
+
+    def _capture_calibration_state(self) -> None:
+        if self._calib_phase != "await_state" or self._calib_index < 0:
+            self._calib_progress_var.set("Calibration: press Start Calibration first")
+            return
+        scenario = self._calib_scenarios[self._calib_index]
+        self._calib_current = {
+            "scenario_id": scenario["id"],
+            "scenario_title": scenario["title"],
+            "baseline": self._capture_live_snapshot(),
+            "real_knob_changed": None,
+            "software_knob_changed": None,
+        }
+        self._calib_phase = "await_real"
+        self._calib_instruction_var.set(self._calibration_step_text())
+        self._calib_progress_var.set(
+            f"Calibration: captured baseline for {scenario['title']}"
+        )
+
+    def _save_calibration_profile(self) -> Path:
+        project_root = Path(__file__).resolve().parents[1]
+        out_dir = project_root / "calibration_profiles"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        radio_type = self._rig.get_radio_type() or "radio"
+        radio_slug = self._slugify(radio_type)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"{radio_slug}_{stamp}.json"
+
+        payload = {
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "radio_type": radio_type,
+            "records": self._calib_records,
+        }
+        out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return out_path
+
+    def _mark_calibration_change(self, changed_vfo: str) -> None:
+        if self._calib_current is None or self._calib_index < 0:
+            self._calib_progress_var.set("Calibration: no active scenario")
+            return
+        if changed_vfo not in {"A", "B"}:
+            return
+
+        if self._calib_phase == "await_real":
+            self._calib_current["real_knob_changed"] = changed_vfo
+            self._calib_phase = "await_software"
+            self._calib_instruction_var.set(self._calibration_step_text())
+            self._calib_progress_var.set(
+                f"Calibration: real knob marked as {changed_vfo} for {self._calib_current['scenario_title']}"
+            )
+            return
+
+        if self._calib_phase != "await_software":
+            self._calib_progress_var.set("Calibration: capture state first")
+            return
+
+        self._calib_current["software_knob_changed"] = changed_vfo
+        self._calib_current["after"] = self._capture_live_snapshot()
+        self._calib_records.append(self._calib_current)
+
+        self._calib_index += 1
+        self._calib_current = None
+
+        if self._calib_index >= len(self._calib_scenarios):
+            self._calib_phase = "idle"
+            out_path = self._save_calibration_profile()
+            self._calib_instruction_var.set(
+                "Calibration complete. Start Calibration to run again for this or another radio."
+            )
+            self._calib_progress_var.set(
+                f"Calibration saved: {out_path.name} ({len(self._calib_records)} records)"
+            )
+            return
+
+        self._calib_phase = "await_state"
+        self._calib_instruction_var.set(self._calibration_step_text())
+        self._calib_progress_var.set(
+            f"Calibration: scenario {self._calib_index + 1}/4 ready"
+        )
+
+    @staticmethod
+    def _row(parent: ttk.Frame, row: int, label: str | tk.StringVar, var: tk.StringVar) -> tuple[tk.Label, tk.Label]:
+        if isinstance(label, tk.StringVar):
+            name_label = tk.Label(parent, textvariable=label, font=("Segoe UI", 11, "bold"), anchor="w")
+        else:
+            name_label = tk.Label(parent, text=f"{label}:", font=("Segoe UI", 11, "bold"), anchor="w")
+        name_label.grid(
+            row=row,
+            column=0,
+            sticky="w",
+            pady=3,
+        )
+        value_label = tk.Label(parent, textvariable=var, font=("Consolas", 12), anchor="w")
+        value_label.grid(
+            row=row,
+            column=1,
+            sticky="w",
+            pady=3,
+        )
+        return name_label, value_label
+
+    def _update_active_vfo_display(self, active_vfo: str | None) -> None:
+        a_active = active_vfo == "A"
+        b_active = active_vfo == "B"
+
+        if self._vfo_a_name_label is not None:
+            self._vfo_a_name_label.configure(font=("Segoe UI", 12, "bold" if a_active else "normal"))
+        if self._vfo_a_value_label is not None:
+            self._vfo_a_value_label.configure(font=("Consolas", 13, "bold" if a_active else "normal"))
+        if self._vfo_b_name_label is not None:
+            self._vfo_b_name_label.configure(font=("Segoe UI", 12, "bold" if b_active else "normal"))
+        if self._vfo_b_value_label is not None:
+            self._vfo_b_value_label.configure(font=("Consolas", 13, "bold" if b_active else "normal"))
+
+    def _copy_debug_to_clipboard(self) -> None:
+        self._root.clipboard_clear()
+        self._root.clipboard_append(self._debug_var.get())
+        self._root.update_idletasks()
+        self._set_knob_report("Debug copied", ok=True)
+        self._knob_status_until = time.monotonic() + 2.0
+
+    def _build_knob_widget(self, parent: tk.Widget) -> tk.Frame:
+        """Build a compact ▲/▼ software tuning widget."""
+        bg = _widget_bg(parent)
+
+        container = tk.Frame(parent, bg=bg)
+
+        tk.Label(
+            container, text="Soft Knob", font=("Segoe UI", 8, "bold"),
+            bg=bg, fg="#445566",
+        ).pack(pady=(0, 2))
+
+        def _tune_up() -> None:
+            self._step_active_vfo_up_1khz()
+
+        def _tune_down() -> None:
+            self._step_active_vfo_down_1khz()
+
+        # ▲ / step-label / ▼ row
+        btn_frame = tk.Frame(container, bg=bg)
+        btn_frame.pack(pady=(4, 0))
+
+        up_btn = _rounded_button(
+            btn_frame, "▲", _tune_up,
+            font=("Segoe UI", 9, "bold"), radius=8, padx=8, pady=3,
+        )
+        up_btn.grid(row=0, column=0, padx=(0, 4))
+
+        tk.Label(
+            btn_frame, text="1 kHz", font=("Segoe UI", 8),
+            bg=bg, fg="#556677", width=5,
+        ).grid(row=0, column=1)
+
+        down_btn = _rounded_button(
+            btn_frame, "▼", _tune_down,
+            font=("Segoe UI", 9, "bold"), radius=8, padx=8, pady=3,
+        )
+        down_btn.grid(row=0, column=2, padx=(4, 0))
+
+        return container
+
+    def _step_active_vfo_up_1khz(self) -> None:
+        try:
+            if not self._rig.is_omnirig_running() or self._rig.backend_name == "mock":
+                self._set_knob_report("Software knob unavailable (OmniRig not ready)", ok=False)
+                self._knob_status_until = time.monotonic() + 2.5
+                return
+
+            knob_command_vfo = self._rig.get_knob_command_vfo()
+            current_hz = self._rig.read_frequency(knob_command_vfo)
+            if current_hz is None:
+                self._set_knob_report(f"Cannot read VFO {knob_command_vfo} frequency", ok=False)
+                self._knob_status_until = time.monotonic() + 2.5
+                return
+
+            self._rig.set_frequency(current_hz + 1_000, knob_command_vfo)
+            time.sleep(0.1)
+        except Exception as exc:
+            self._set_knob_report(f"Software knob error ({exc})", ok=False)
+            self._knob_status_until = time.monotonic() + 3.0
+
+    def _step_active_vfo_down_1khz(self) -> None:
+        try:
+            if not self._rig.is_omnirig_running() or self._rig.backend_name == "mock":
+                self._set_knob_report("Software knob unavailable (OmniRig not ready)", ok=False)
+                self._knob_status_until = time.monotonic() + 2.5
+                return
+
+            knob_command_vfo = self._rig.get_knob_command_vfo()
+            current_hz = self._rig.read_frequency(knob_command_vfo)
+            if current_hz is None:
+                self._set_knob_report(f"Cannot read VFO {knob_command_vfo} frequency", ok=False)
+                self._knob_status_until = time.monotonic() + 2.5
+                return
+
+            self._rig.set_frequency(current_hz - 1_000, knob_command_vfo)
+            time.sleep(0.1)
+        except Exception as exc:
+            self._set_knob_report(f"Software knob error ({exc})", ok=False)
+            self._knob_status_until = time.monotonic() + 3.0
+
+    def _refresh(self) -> None:
+        try:
+            omnirig_running = self._rig.is_omnirig_running()
+            self._refresh_knob_connection_status()
+            self._refresh_profile_file_label()
+            self._refresh_loaded_models_label()
+            debug = self._rig.get_debug_snapshot()
+            self._debug_var.set(
+                f"Debug: backend={debug['backend']} status={debug['status']} vfo={debug['vfo']} route={debug['vfo_route']} freqCur={debug['freq_current']} freqRaw={debug['freq_raw']} knobRow={debug['knob_display_vfo']} knobCmd={debug['knob_command_vfo']} split={debug['split']}"
+            )
+
+            if not omnirig_running:
+                self._omnirig_fail_count += 1
+                if self._omnirig_fail_count >= self._omnirig_fail_threshold:
+                    if self._last_omnirig_report != "Not active":
+                        self._set_omnirig_report("Not active", ok=False)
+                        self._last_omnirig_report = "Not active"
+                self._freq_fail_count += 1
+                if self._freq_fail_count >= self._freq_fail_threshold:
+                    self._set_na_values()
+                self._apply_split_visual_effect(None)
+            elif self._rig.backend_name == "mock":
+                self._omnirig_fail_count += 1
+                if self._omnirig_fail_count >= self._omnirig_fail_threshold:
+                    if self._last_omnirig_report != "Not active":
+                        self._set_omnirig_report("Not active", ok=False)
+                        self._last_omnirig_report = "Not active"
+                self._freq_fail_count += 1
+                if self._freq_fail_count >= self._freq_fail_threshold:
+                    self._set_na_values()
+                self._apply_split_visual_effect(None)
+            else:
+                freq_a = self._rig.read_frequency("A")
+                freq_b = self._rig.read_frequency("B")
+                freq_current = self._rig.read_current_frequency()
+                split = self._rig.read_split_mode()
+                self._refresh_row_labels(split)
+                self._apply_split_visual_effect(split)
+
+                if freq_a is None or freq_b is None:
+                    self._omnirig_fail_count += 1
+                    if self._omnirig_fail_count >= self._omnirig_fail_threshold:
+                        if self._last_omnirig_report != "Not active":
+                            self._set_omnirig_report("Not active", ok=False)
+                            self._last_omnirig_report = "Not active"
+                    self._freq_fail_count += 1
+                    if self._freq_fail_count >= self._freq_fail_threshold:
+                        self._set_na_values()
+                else:
+                    self._freq_fail_count = 0  # Reset fail counter on success
+                    self._omnirig_fail_count = 0  # Reset omnirig fail counter on success
+                    self._update_active_vfo_display("A")
+                    if self._last_omnirig_report != "Active":
+                        self._set_omnirig_report("Active", ok=True)
+                        self._last_omnirig_report = "Active"
+                    self._radio_type_var.set(self._rig.get_radio_type())
+                    self._current_freq_var.set(_fmt_hz(freq_current) if freq_current is not None else "N/A")
+                    if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
+                        self._vfo_a_var.set(_fmt_hz(freq_b))
+                        self._vfo_b_var.set(_fmt_hz(freq_a))
+                    else:
+                        self._vfo_a_var.set(_fmt_hz(freq_a))
+                        self._vfo_b_var.set(_fmt_hz(freq_b))
+                    self._vfo_route_var.set(self._rig.get_vfo_route() or "N/A")
+                    if self._rig.uses_display_slot_mode():
+                        self._knob_target_var.set(
+                            f"Row 1 is the knob-frequency slot; command uses slot {self._rig.get_knob_command_vfo()}; physical VFO A/B is not exposed"
+                        )
+                    else:
+                        self._knob_target_var.set(
+                            f"Display row {self._rig.get_knob_display_vfo()} / Command VFO {self._rig.get_knob_command_vfo()}"
+                        )
+                    self._split_var.set("YES" if split else "NO" if split is not None else "N/A")
+        except Exception as exc:
+            self._set_omnirig_report("Not active", ok=False)
+            self._set_knob_report("Not connected", ok=False)
+            self._freq_fail_count += 1
+            if self._freq_fail_count >= self._freq_fail_threshold:
+                self._set_na_values()
+
+        self._root.after(self._refresh_ms, self._refresh)
+
+    def run(self) -> None:
+        self._refresh()
+        self._root.mainloop()
