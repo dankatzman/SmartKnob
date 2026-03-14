@@ -85,33 +85,35 @@ void formatStepLine(long step, char *buf) {
   strcpy(buf, "1.0");
 }
 
-void lcdWriteLine(int row, const char *text) {
-  lcd.setCursor(0, row);
+
+// Write frequency string at column 1 (second char) of given row
+void lcdWriteFreq(int row, const char *text) {
+  lcd.setCursor(1, row);
   lcd.print(text);
 }
+
 
 void updateLcdFreq() {
   if (baseTxFreqHz == lastLcdFreq) return;
   lastLcdFreq = baseTxFreqHz;
   char buf[17];
   formatFreqLine(baseTxFreqHz, buf);
-  lcdWriteLine(0, buf);
-  formatStepLine(stepKhz, buf);
-  lcd.setCursor(9, 1);
-  lcd.print(buf);
-  lcd.print(" KHz");
+  lcdWriteFreq(0, buf);
+  // If you want to print anything else on line 1, do it here
 }
 
 void updateLcdDualFreq() {
   char buf[17];
+  // RX line (row 0): marker at col 0, freq at col 1
   lcd.setCursor(0, 0);
   if (activeVfo == 'R') lcd.write(byte(0)); else lcd.print(' ');
   formatFreqLine(rxFreqHz, buf);
-  lcd.print(buf);
+  lcdWriteFreq(0, buf);
+  // TX line (row 1): marker at col 0, freq at col 1
   lcd.setCursor(0, 1);
   if (activeVfo == 'T') lcd.write(byte(0)); else lcd.print(' ');
   formatFreqLine(txFreqHz, buf);
-  lcd.print(buf);
+  lcdWriteFreq(1, buf);
 }
 
 void encoderISR() {
