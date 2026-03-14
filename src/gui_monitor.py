@@ -134,8 +134,8 @@ class RigMonitorWindow:
 
         self._root = tk.Tk()
         self._root.title("vfoStepsKnob - Radio Monitor")
-        self._root.geometry("760x500")
-        self._root.minsize(620, 380)
+        self._root.geometry("520x340")
+        self._root.minsize(480, 320)
 
         self._radio_type_var = tk.StringVar(value="-")
         self._profile_file_var = tk.StringVar(value="-")
@@ -226,8 +226,6 @@ class RigMonitorWindow:
         self._vfo_a_value_label = tk.Label(frame, textvariable=self._vfo_a_var, font=("Consolas", 12), anchor="w")
         self._vfo_a_value_label.grid(row=2, column=1, sticky="w", pady=3)
         self._render_vfo_a_name_label()
-        knob_widget = self._build_knob_widget(frame)
-        knob_widget.grid(row=2, column=3, rowspan=2, sticky="e", padx=(16, 0), pady=2)
         self._vfo_b_name_container = tk.Frame(frame)
         self._vfo_b_name_container.grid(row=3, column=0, sticky="w", pady=3)
         self._vfo_b_value_label = tk.Label(frame, textvariable=self._vfo_b_var, font=("Consolas", 12), anchor="w")
@@ -466,7 +464,14 @@ class RigMonitorWindow:
             self._omnirig_report_label.configure(fg="#0a7a32" if ok else "#b00020")
 
     def _set_knob_report(self, text: str, ok: bool) -> None:
-        self._knob_report_var.set(f"Knob: {text}")
+        # Always show only 'Active on COM#' or 'Not Active' (with port if known)
+        if ok and self._last_knob_port:
+            status = f"Active on {self._last_knob_port}"
+        elif self._last_knob_port:
+            status = f"Not Active (last: {self._last_knob_port})"
+        else:
+            status = "Not Active"
+        self._knob_report_var.set(f"Knob: {status}")
         if self._knob_report_label is not None:
             self._knob_report_label.configure(fg="#0a7a32" if ok else "#b00020")
 
@@ -726,8 +731,16 @@ class RigMonitorWindow:
         return name_label, value_label
 
     def _update_active_vfo_display(self, active_vfo: str | None) -> None:
-        a_active = active_vfo == "A"
-        b_active = active_vfo == "B"
+        split = self._rig.read_split_mode() if hasattr(self._rig, 'read_split_mode') else False
+        if split:
+            # In split mode, only TX line is bold
+            tx_vfo = self._rig.get_tx_vfo() if hasattr(self._rig, 'get_tx_vfo') else active_vfo
+            a_active = tx_vfo == "A"
+            b_active = tx_vfo == "B"
+        else:
+            # In non-split, both RX and TX are bold
+            a_active = True
+            b_active = True
 
         if self._vfo_a_name_label is not None:
             self._vfo_a_name_label.configure(font=("Segoe UI", 12, "bold" if a_active else "normal"))
@@ -745,85 +758,6 @@ class RigMonitorWindow:
         self._set_knob_report("Debug copied", ok=True)
         self._knob_status_until = time.monotonic() + 2.0
 
-    def _build_knob_widget(self, parent: tk.Widget) -> tk.Frame:
-        """Build a compact ▲/▼ software tuning widget."""
-        bg = _widget_bg(parent)
-
-        container = tk.Frame(parent, bg=bg)
-
-        tk.Label(
-            container, text="Soft Knob", font=("Segoe UI", 8, "bold"),
-            bg=bg, fg="#445566",
-        ).pack(pady=(0, 2))
-
-        def _tune_up() -> None:
-            self._step_active_vfo_up_1khz()
-
-        def _tune_down() -> None:
-            self._step_active_vfo_down_1khz()
-
-        # ▲ / step-label / ▼ row
-        btn_frame = tk.Frame(container, bg=bg)
-        btn_frame.pack(pady=(4, 0))
-
-        up_btn = _rounded_button(
-            btn_frame, "▲", _tune_up,
-            font=("Segoe UI", 9, "bold"), radius=8, padx=8, pady=3,
-        )
-        up_btn.grid(row=0, column=0, padx=(0, 4))
-
-        tk.Label(
-            btn_frame, text="1 kHz", font=("Segoe UI", 8),
-            bg=bg, fg="#556677", width=5,
-        ).grid(row=0, column=1)
-
-        down_btn = _rounded_button(
-            btn_frame, "▼", _tune_down,
-            font=("Segoe UI", 9, "bold"), radius=8, padx=8, pady=3,
-        )
-        down_btn.grid(row=0, column=2, padx=(4, 0))
-
-        return container
-
-    def _step_active_vfo_up_1khz(self) -> None:
-        try:
-            if not self._rig.is_omnirig_running() or self._rig.backend_name == "mock":
-                self._set_knob_report("Software knob unavailable (OmniRig not ready)", ok=False)
-                self._knob_status_until = time.monotonic() + 2.5
-                return
-
-            knob_command_vfo = self._rig.get_knob_command_vfo()
-            current_hz = self._rig.read_frequency(knob_command_vfo)
-            if current_hz is None:
-                self._set_knob_report(f"Cannot read VFO {knob_command_vfo} frequency", ok=False)
-                self._knob_status_until = time.monotonic() + 2.5
-                return
-
-            self._rig.set_frequency(current_hz + 1_000, knob_command_vfo)
-            time.sleep(0.1)
-        except Exception as exc:
-            self._set_knob_report(f"Software knob error ({exc})", ok=False)
-            self._knob_status_until = time.monotonic() + 3.0
-
-    def _step_active_vfo_down_1khz(self) -> None:
-        try:
-            if not self._rig.is_omnirig_running() or self._rig.backend_name == "mock":
-                self._set_knob_report("Software knob unavailable (OmniRig not ready)", ok=False)
-                self._knob_status_until = time.monotonic() + 2.5
-                return
-
-            knob_command_vfo = self._rig.get_knob_command_vfo()
-            current_hz = self._rig.read_frequency(knob_command_vfo)
-            if current_hz is None:
-                self._set_knob_report(f"Cannot read VFO {knob_command_vfo} frequency", ok=False)
-                self._knob_status_until = time.monotonic() + 2.5
-                return
-
-            self._rig.set_frequency(current_hz - 1_000, knob_command_vfo)
-            time.sleep(0.1)
-        except Exception as exc:
-            self._set_knob_report(f"Software knob error ({exc})", ok=False)
-            self._knob_status_until = time.monotonic() + 3.0
 
     def _on_set_freq(self, hz_str: str) -> None:
         """Called when the Arduino sends SET_FREQ:<hz> after the user stops turning."""
@@ -831,16 +765,23 @@ class RigMonitorWindow:
             hz = int(hz_str)
             if hz <= 0:
                 return
-            tx_vfo = self._rig.get_tx_vfo()
-            # Instantly update the GUI display to show the new frequency
+            split = self._rig.read_split_mode()
+            if split:
+                vfo = self._rig.get_tx_vfo()
+                # Only update the TX field, do not touch RX
+                if vfo == "A":
+                    self._vfo_a_var.set(_fmt_hz(hz))
+                elif vfo == "B":
+                    self._vfo_b_var.set(_fmt_hz(hz))
+            else:
+                vfo = self._rig.get_knob_display_vfo()
+                if vfo == "A":
+                    self._vfo_a_var.set(_fmt_hz(hz))
+                elif vfo == "B":
+                    self._vfo_b_var.set(_fmt_hz(hz))
             self._pending_freq_hz = hz
             self._current_freq_var.set(_fmt_hz(hz))
-            if tx_vfo == "A":
-                self._vfo_a_var.set(_fmt_hz(hz))
-            elif tx_vfo == "B":
-                self._vfo_b_var.set(_fmt_hz(hz))
-            # Now send the command to OmniRig (radio)
-            self._rig.set_frequency(hz, tx_vfo)
+            self._rig.set_frequency(hz, vfo)
             self._set_knob_report("Knob active", ok=True)
             self._knob_status_until = time.monotonic() + 2.0
         except Exception as exc:
@@ -939,20 +880,42 @@ class RigMonitorWindow:
                     if self._pending_freq_hz is not None:
                         # Still waiting for radio confirmation; keep showing pending value
                         self._current_freq_var.set(_fmt_hz(self._pending_freq_hz))
-                        if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
-                            self._vfo_a_var.set(_fmt_hz(freq_b))
-                            self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
+                        split = self._rig.read_split_mode()
+                        if split:
+                            tx_vfo = self._rig.get_tx_vfo()
+                            if tx_vfo == "A":
+                                self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
+                                self._vfo_b_var.set(_fmt_hz(freq_b))  # Always update RX from radio
+                            elif tx_vfo == "B":
+                                self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
+                                self._vfo_a_var.set(_fmt_hz(freq_a))  # Always update RX from radio
                         else:
-                            self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
-                            self._vfo_b_var.set(_fmt_hz(freq_b))
+                            # Not split: update both fields as usual
+                            if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
+                                self._vfo_a_var.set(_fmt_hz(freq_b))
+                                self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
+                            else:
+                                self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
+                                self._vfo_b_var.set(_fmt_hz(freq_b))
                     else:
                         self._current_freq_var.set(_fmt_hz(freq_current) if freq_current is not None else "N/A")
-                        if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
-                            self._vfo_a_var.set(_fmt_hz(freq_b))
-                            self._vfo_b_var.set(_fmt_hz(freq_a))
+                        split = self._rig.read_split_mode()
+                        if split:
+                            tx_vfo = self._rig.get_tx_vfo()
+                            # Always update RX field from radio in split mode
+                            if tx_vfo == "A":
+                                self._vfo_a_var.set(_fmt_hz(freq_a))
+                                self._vfo_b_var.set(_fmt_hz(freq_b))
+                            elif tx_vfo == "B":
+                                self._vfo_a_var.set(_fmt_hz(freq_a))
+                                self._vfo_b_var.set(_fmt_hz(freq_b))
                         else:
-                            self._vfo_a_var.set(_fmt_hz(freq_a))
-                            self._vfo_b_var.set(_fmt_hz(freq_b))
+                            if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
+                                self._vfo_a_var.set(_fmt_hz(freq_b))
+                                self._vfo_b_var.set(_fmt_hz(freq_a))
+                            else:
+                                self._vfo_a_var.set(_fmt_hz(freq_a))
+                                self._vfo_b_var.set(_fmt_hz(freq_b))
                     self._vfo_route_var.set(self._rig.get_vfo_route() or "N/A")
                     if self._rig.uses_display_slot_mode():
                         self._knob_target_var.set(

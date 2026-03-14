@@ -34,6 +34,7 @@ class CommandProcessor:
 
 	def handle(self, line: str) -> str:
 		command, value = _split_command(line)
+		print(f"DEBUG: Protocol received command='{command}' value='{value}' from line: {line}")
 		if not command:
 			return "ERR:EMPTY"
 
@@ -150,6 +151,14 @@ class CommandProcessor:
 			if command == "RX_ON":
 				self.rig.set_tx(False)
 				return "OK:RX_ON"
+
+			if command == "SET_TX_FREQ":
+				if value is None:
+					return "ERR:MISSING_VALUE"
+				hz = int(value)
+				tx_vfo = self.rig.get_tx_vfo()
+				new_hz = self.rig.set_frequency(hz, tx_vfo)
+				return f"OK:SET_TX_FREQ:{tx_vfo}:{new_hz}"
 
 			return f"ERR:UNKNOWN_COMMAND:{command}"
 		except ValueError as exc:

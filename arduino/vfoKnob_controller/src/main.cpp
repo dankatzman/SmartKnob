@@ -79,8 +79,10 @@ void formatFreqLine(long hz, char *buf) {
   } else {
     long mhz = hz / 1000000L;
     long khz = (hz % 1000000L) / 1000L;
-    long rem  = hz % 1000L;
-    sprintf(tmp, "%ld.%03ld.%03ld Hz", mhz, khz, rem);
+    long rem = hz % 1000L;
+    // Only show .0 or .5 (one decimal place for kHz)
+    int half = (rem >= 500) ? 5 : 0;
+    sprintf(tmp, "%ld.%03ld.%1d", mhz, khz, half);
   }
   int len = strlen(tmp);
   memcpy(buf, tmp, len);
@@ -90,12 +92,8 @@ void formatFreqLine(long hz, char *buf) {
 
 // Format "Step: N kHz    " padded to exactly 16 chars.
 void formatStepLine(long step, char *buf) {
-  char tmp[17];
-  sprintf(tmp, "Step: %ld kHz", step);
-  int len = strlen(tmp);
-  memcpy(buf, tmp, len);
-  for (int i = len; i < 16; i++) buf[i] = ' ';
-  buf[16] = '\0';
+  // Always show step as "1.0"
+  strcpy(buf, "1.0");
 }
 
 void lcdWriteLine(int row, const char *text) {
@@ -110,6 +108,11 @@ void updateLcdFreq() {
   char buf[17];
   formatFreqLine(baseTxFreqHz, buf);
   lcdWriteLine(0, buf);
+  // Update step at (9,1) and 'KHz' at (13,1) with one space between value and K
+  formatStepLine(stepKhz, buf);
+  lcd.setCursor(9, 1);
+  lcd.print(buf);
+  lcd.print(" KHz"); // ensures one space between digit and K
 }
 
 // ── Encoder ISR ───────────────────────────────────────────────────────────────
@@ -199,7 +202,7 @@ void pollFreqSend() {
   // Atomic snapshot of ISR-written variables.
   noInterrupts();
   long          pk  = pendingKhz;
-  unsigned long lsm = lastStepMs;
+  // ...existing code...
   interrupts();
 
   if (pk == 0) return;
@@ -244,9 +247,12 @@ void setup() {
   char buf[17];
   formatFreqLine(0, buf);
   lcdWriteLine(0, buf);
-
+  // Show step at (9,1) and 'Khz' at (14,1)
   formatStepLine(stepKhz, buf);
-  lcdWriteLine(1, buf);
+  lcd.setCursor(9, 1);
+  lcd.print(buf);
+  lcd.setCursor(13, 1);
+  lcd.print("KHz");
 
   pinMode(ENC_CLK, INPUT_PULLUP);
   pinMode(ENC_DT,  INPUT_PULLUP);

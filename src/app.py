@@ -82,6 +82,7 @@ def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -
                 if line is None:
                     continue
 
+                print(f"DEBUG: Received line from Arduino: {line}")
                 response = processor.handle(line)
                 transport.write_line(response)
                 print(f"RX: {line} | TX: {response}")
