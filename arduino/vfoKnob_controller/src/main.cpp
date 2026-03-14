@@ -85,36 +85,25 @@ void formatStepLine(long step, char *buf) {
   strcpy(buf, "1.0");
 }
 
-
-// Write frequency string at column 1 (second char) of given row
-void lcdWriteFreq(int row, const char *text) {
-  lcd.setCursor(1, row);
+void lcdWriteLine(int row, const char *text) {
+  lcd.setCursor(0, row);
   lcd.print(text);
 }
 
-
 void updateLcdFreq() {
-  if (baseTxFreqHz == lastLcdFreq) return;
-  lastLcdFreq = baseTxFreqHz;
+  // Print RX frequency in row 0, columns 0-8
   char buf[17];
-  formatFreqLine(baseTxFreqHz, buf);
-  lcdWriteFreq(0, buf);
-  // If you want to print anything else on line 1, do it here
+  formatFreqLine(rxFreqHz, buf);
+  lcd.setCursor(0, 0);
+  for (int i = 0; i < 9; ++i) lcd.print(buf[i]);
+
+  // Print TX frequency in row 1, columns 0-8
+  formatFreqLine(txFreqHz, buf);
+  lcd.setCursor(0, 1);
+  for (int i = 0; i < 9; ++i) lcd.print(buf[i]);
+  // No printing outside columns 0-8 in either row
 }
 
-void updateLcdDualFreq() {
-  char buf[17];
-  // RX line (row 0): marker at col 0, freq at col 1
-  lcd.setCursor(0, 0);
-  if (activeVfo == 'R') lcd.write(byte(0)); else lcd.print(' ');
-  formatFreqLine(rxFreqHz, buf);
-  lcdWriteFreq(0, buf);
-  // TX line (row 1): marker at col 0, freq at col 1
-  lcd.setCursor(0, 1);
-  if (activeVfo == 'T') lcd.write(byte(0)); else lcd.print(' ');
-  formatFreqLine(txFreqHz, buf);
-  lcdWriteFreq(1, buf);
-}
 
 void encoderISR() {
   uint8_t pins  = PIND;
@@ -164,7 +153,7 @@ void handleCommand(const char *line) {
     rxFreqHz = atol(p);
     p = strchr(p, ':'); if (p) { txFreqHz = atol(++p); }
     p = strchr(p, ':'); if (p) { activeVfo = (*(++p) == 'R') ? 'R' : 'T'; }
-    updateLcdDualFreq();
+    updateLcdFreq();
     return;
   }
 }
@@ -196,10 +185,11 @@ void pollFreqSend() {
   if (pk == 0) return;
   if (baseTxFreqHz > 0) {
     long newFreq = baseTxFreqHz + (pk * 1000L);
+    baseTxFreqHz = newFreq;
+    rxFreqHz = newFreq; // Immediately update RX frequency for LCD
+    updateLcdFreq(); // Update LCD immediately after frequency changes
     ftdiSerial.print("SET_FREQ:");
     ftdiSerial.println(newFreq);
-    baseTxFreqHz = newFreq;
-    updateLcdFreq();
     freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
   } else {
     ftdiSerial.println("NO_BASE_FREQ");
