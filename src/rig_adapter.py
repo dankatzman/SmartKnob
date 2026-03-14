@@ -601,6 +601,46 @@ class RigAdapter:
 			return parsed
 		return None
 
+	def get_tx_vfo(self) -> str:
+		"""Return the VFO letter ('A' or 'B') that is currently the TX side."""
+		split = self.read_split_mode()
+		if self.uses_display_slot_mode():
+			return "B" if split else "A"
+		if not split:
+			return self.get_knob_display_vfo()
+		route = self.get_vfo_route()
+		if route and len(route) == 2:
+			return route[1]
+		return _opposite_vfo(self.get_knob_display_vfo())
+
+	def get_tx_frequency(self) -> Optional[int]:
+		"""Return the TX frequency in Hz, or None if unavailable.
+
+		When not in split mode the TX and RX frequencies are the same VFO.
+		When split is on, the TX VFO is identified via the OmniRig route
+		(route[1] = TX side) or, as a fallback, the opposite of the knob/RX VFO.
+		"""
+		split = self.read_split_mode()
+
+		if self.uses_display_slot_mode():
+			# IC-7300 style: OmniRig always puts the knob/RX frequency in FreqA.
+			# Split ON → FreqB is the TX slot.
+			if split:
+				return self.read_frequency("B")
+			return self.read_frequency("A")
+
+		if not split:
+			# Simplex: TX = RX = knob display VFO.
+			return self.read_frequency(self.get_knob_display_vfo())
+
+		# Split ON: use VFO route to identify the TX VFO (route[1] = TX side).
+		route = self.get_vfo_route()
+		if route and len(route) == 2:
+			return self.read_frequency(route[1])
+
+		# Fallback: TX is the opposite of the knob display (RX) VFO.
+		return self.read_frequency(_opposite_vfo(self.get_knob_display_vfo()))
+
 	def set_frequency(self, hz: int, vfo: Optional[str] = None) -> int:
 		if hz <= 0:
 			raise ValueError("Frequency must be positive")
@@ -610,13 +650,37 @@ class RigAdapter:
 			raise ValueError("VFO must be A or B")
 
 		if self._is_wrapper_backend():
+			# Try VFO-specific setters first (OmniRig COM interface style).
+			specific_name = "SetFreqA" if selected_vfo == "A" else "SetFreqB"
+			specific = getattr(self._backend, specific_name, None)
+			if callable(specific):
+				specific(hz)
+				if selected_vfo == "A":
+					self._state.freq_a_hz = hz
+				else:
+					self._state.freq_b_hz = hz
+				return hz
+
+			# Try generic setFrequency(vfo, hz).
 			setter = getattr(self._backend, "setFrequency", None)
 			if callable(setter):
-				try:
-					setter(selected_vfo, hz)
-					return hz
-				except Exception:
-					pass
+				setter(selected_vfo, hz)
+				if selected_vfo == "A":
+					self._state.freq_a_hz = hz
+				else:
+					self._state.freq_b_hz = hz
+				return hz
+
+			# Try setParam("FreqA"/"FreqB", hz) or setParam("Freq", hz).
+			set_param = getattr(self._backend, "setParam", None)
+			if callable(set_param):
+				param_key = "FreqA" if selected_vfo == "A" else "FreqB"
+				set_param(param_key, hz)
+				if selected_vfo == "A":
+					self._state.freq_a_hz = hz
+				else:
+					self._state.freq_b_hz = hz
+				return hz
 
 		setter_names = ["set_freq", "set_frequency", "SetFreq"]
 		called = self._call_any(setter_names, selected_vfo, hz)

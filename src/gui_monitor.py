@@ -13,6 +13,10 @@ from typing import Any
 from rig_adapter import RigAdapter
 from serial_transport import SerialTransport
 
+# Baud rate for the FTDI232 auxiliary serial port on the Arduino.
+# Must match FTDI_BAUD in main.cpp.
+_KNOB_BAUD = 57600
+
 def _rounded_button(
     parent: tk.Widget,
     text: str,
@@ -125,6 +129,9 @@ class RigMonitorWindow:
         self._rig = rig
         self._refresh_ms = max(100, refresh_ms)
 
+        # Track the last frequency set by Arduino (pending confirmation)
+        self._pending_freq_hz: int | None = None
+
         self._root = tk.Tk()
         self._root.title("vfoStepsKnob - Radio Monitor")
         self._root.geometry("760x500")
@@ -158,6 +165,9 @@ class RigMonitorWindow:
         self._last_knob_probe: float = 0.0
         self._last_knob_port: str | None = None
         self._probe_running: bool = False
+        self._transport: SerialTransport | None = None
+        self._last_freq_send: float = 0.0
+        self._freq_send_interval: float = 1.0
         # Debounce variables for N/A flicker
         self._freq_fail_count: int = 0
         self._freq_fail_threshold: int = 3
@@ -469,7 +479,7 @@ class RigMonitorWindow:
             probe_errors: list[str] = []
             found_port: str | None = None
             for port in SerialTransport.candidate_ports():
-                matched, detail = SerialTransport.probe_device_identity_details(port, baudrate=115200)
+                matched, detail = SerialTransport.probe_device_identity_details(port, baudrate=_KNOB_BAUD)
                 if matched:
                     found_port = port
                     break
@@ -484,16 +494,62 @@ class RigMonitorWindow:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _open_knob_transport(self, port: str) -> None:
+        self._close_knob_transport()
+        try:
+            t = SerialTransport()
+            t.open(port, baudrate=_KNOB_BAUD)
+            self._transport = t
+            # Give the Arduino time to boot after the DTR reset triggered by open().
+            self._last_freq_send = time.monotonic()
+            self._start_knob_reader()
+        except Exception:
+            self._transport = None
+
+    def _start_knob_reader(self) -> None:
+        """Background thread that reads encoder events from the Arduino."""
+        def reader() -> None:
+            while True:
+                t = self._transport
+                if t is None or not t.is_connected:
+                    break
+                try:
+                    line = t.read_line()
+                except Exception:
+                    break
+                if line is None:
+                    continue
+                if line.startswith("SET_FREQ:"):
+                    hz_str = line[9:]
+                    self._root.after(0, lambda h=hz_str: self._on_set_freq(h))
+                elif line == "NO_BASE_FREQ":
+                    self._root.after(0, self._on_no_base_freq)
+                elif line == "BTN:PRESS":
+                    self._root.after(0, self._on_knob_button_press)
+
+        threading.Thread(target=reader, daemon=True).start()
+
+    def _close_knob_transport(self) -> None:
+        if self._transport is not None:
+            try:
+                self._transport.close()
+            except Exception:
+                pass
+            self._transport = None
+
     def _on_knob_port_detected(self, port: str | None, error: str | None) -> None:
         self._probe_running = False
         if port:
             self._last_knob_port = port
             self._set_knob_report(f"Knob detected on {port}", ok=True)
+            self._open_knob_transport(port)
         elif error:
             self._last_knob_port = None
+            self._close_knob_transport()
             self._set_knob_report(f"Knob detection error: {error}", ok=False)
         else:
             self._last_knob_port = None
+            self._close_knob_transport()
             self._set_knob_report("Knob not found", ok=False)
 
     def _refresh_knob_connection_status(self) -> None:
@@ -513,6 +569,7 @@ class RigMonitorWindow:
                 return  # Still present; keep showing "connected"
             # Port disappeared — clear state and fall through to a full probe.
             self._last_knob_port = None
+            self._close_knob_transport()
             self._set_knob_report("Knob disconnected", ok=False)
 
         self._detect_knob_port_async()
@@ -768,10 +825,61 @@ class RigMonitorWindow:
             self._set_knob_report(f"Software knob error ({exc})", ok=False)
             self._knob_status_until = time.monotonic() + 3.0
 
+    def _on_set_freq(self, hz_str: str) -> None:
+        """Called when the Arduino sends SET_FREQ:<hz> after the user stops turning."""
+        try:
+            hz = int(hz_str)
+            if hz <= 0:
+                return
+            tx_vfo = self._rig.get_tx_vfo()
+            # Instantly update the GUI display to show the new frequency
+            self._pending_freq_hz = hz
+            self._current_freq_var.set(_fmt_hz(hz))
+            if tx_vfo == "A":
+                self._vfo_a_var.set(_fmt_hz(hz))
+            elif tx_vfo == "B":
+                self._vfo_b_var.set(_fmt_hz(hz))
+            # Now send the command to OmniRig (radio)
+            self._rig.set_frequency(hz, tx_vfo)
+            self._set_knob_report("Knob active", ok=True)
+            self._knob_status_until = time.monotonic() + 2.0
+        except Exception as exc:
+            self._set_knob_report(f"Set freq error: {exc}", ok=False)
+            self._knob_status_until = time.monotonic() + 4.0
+
+    def _on_no_base_freq(self) -> None:
+        """Called when the Arduino reports it has no base frequency yet."""
+        self._set_knob_report("Knob turned but no base frequency received yet", ok=False)
+        self._knob_status_until = time.monotonic() + 3.0
+
+    def _on_knob_button_press(self) -> None:
+        """Called when the rotary encoder push button is pressed."""
+        # TODO: assign an action to the button press
+        pass
+
+    def _send_tx_freq_to_knob(self) -> None:
+        """Send the current TX frequency to the Arduino over serial, once per interval."""
+        if self._transport is None or not self._transport.is_connected:
+            return
+        now = time.monotonic()
+        if now - self._last_freq_send < self._freq_send_interval:
+            return
+        self._last_freq_send = now
+        freq = self._rig.get_tx_frequency()
+        if freq is None:
+            return
+        try:
+            self._transport.write_line(f"FREQ_TX:{freq}")
+        except Exception:
+            self._close_knob_transport()
+            self._last_knob_port = None
+            self._set_knob_report("Knob disconnected", ok=False)
+
     def _refresh(self) -> None:
         try:
             omnirig_running = self._rig.is_omnirig_running()
             self._refresh_knob_connection_status()
+            self._send_tx_freq_to_knob()
             self._refresh_profile_file_label()
             self._refresh_loaded_models_label()
             debug = self._rig.get_debug_snapshot()
@@ -824,13 +932,27 @@ class RigMonitorWindow:
                         self._set_omnirig_report("Active", ok=True)
                         self._last_omnirig_report = "Active"
                     self._radio_type_var.set(self._rig.get_radio_type())
-                    self._current_freq_var.set(_fmt_hz(freq_current) if freq_current is not None else "N/A")
-                    if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
-                        self._vfo_a_var.set(_fmt_hz(freq_b))
-                        self._vfo_b_var.set(_fmt_hz(freq_a))
+                    # Only overwrite the GUI display if the radio disagrees with the pending Arduino value
+                    if self._pending_freq_hz is not None and freq_current == self._pending_freq_hz:
+                        # Radio confirmed the pending value; clear pending
+                        self._pending_freq_hz = None
+                    if self._pending_freq_hz is not None:
+                        # Still waiting for radio confirmation; keep showing pending value
+                        self._current_freq_var.set(_fmt_hz(self._pending_freq_hz))
+                        if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
+                            self._vfo_a_var.set(_fmt_hz(freq_b))
+                            self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
+                        else:
+                            self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
+                            self._vfo_b_var.set(_fmt_hz(freq_b))
                     else:
-                        self._vfo_a_var.set(_fmt_hz(freq_a))
-                        self._vfo_b_var.set(_fmt_hz(freq_b))
+                        self._current_freq_var.set(_fmt_hz(freq_current) if freq_current is not None else "N/A")
+                        if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
+                            self._vfo_a_var.set(_fmt_hz(freq_b))
+                            self._vfo_b_var.set(_fmt_hz(freq_a))
+                        else:
+                            self._vfo_a_var.set(_fmt_hz(freq_a))
+                            self._vfo_b_var.set(_fmt_hz(freq_b))
                     self._vfo_route_var.set(self._rig.get_vfo_route() or "N/A")
                     if self._rig.uses_display_slot_mode():
                         self._knob_target_var.set(

@@ -1,0 +1,161 @@
+#include <Arduino.h>
+#include <SoftwareSerial.h>
+#include <string.h>
+
+// Hardware Serial (USB programming port) — debug output / serial monitor
+const unsigned long DEBUG_BAUD = 115200;
+
+// SoftwareSerial on pins 8/9 — FTDI232 USB adapter — Python communication
+// Wiring: FTDI TX → pin 8, FTDI RX → pin 9, FTDI GND → GND
+const unsigned long FTDI_BAUD = 57600;
+SoftwareSerial ftdiSerial(8, 9);  // RX=pin8, TX=pin9
+
+// Rotary encoder pins
+// CLK must be on pin 2 (INT0) to use a hardware interrupt — never misses a click.
+const int ENC_CLK = 2;  // CLK (A) — hardware interrupt INT0
+const int ENC_DT  = 3;  // DT  (B)
+const int ENC_SW  = 6;  // Push button
+
+// Identification banner sent to Python over FTDI
+const char *ARDUINO_BANNER = "HELLO_ARDUINO:VFOKNOB";
+
+// Buffer for incoming FTDI data
+char serialLine[48];
+int serialLineLen = 0;
+
+// Timestamp of last banner sent
+unsigned long lastHelloMs = 0;
+
+// Encoder step counter — written in ISR, read in loop()
+volatile int encSteps = 0;
+
+// Last known SW state for button edge detection
+int lastSw = HIGH;
+
+// ── Banner ────────────────────────────────────────────────────────────────────
+
+void sendBanner() {
+  ftdiSerial.println(ARDUINO_BANNER);
+  lastHelloMs = millis();
+}
+
+// ── Command handler ───────────────────────────────────────────────────────────
+
+void handleCommand(const char *line) {
+  if (strcmp(line, "WHO") == 0) {
+    sendBanner();
+    return;
+  }
+
+  if (strcmp(line, "PING") == 0) {
+    ftdiSerial.println("PONG_ARDUINO");
+    return;
+  }
+
+  if (strncmp(line, "FREQ_TX:", 8) == 0) {
+    long freq = atol(line + 8);
+    ftdiSerial.print("TX_ACK:");
+    ftdiSerial.println(freq);
+    Serial.print("TX freq: ");
+    Serial.print(freq);
+    Serial.println(" Hz");
+    return;
+  }
+}
+
+// ── FTDI serial reader ────────────────────────────────────────────────────────
+
+void pollFtdi() {
+  while (ftdiSerial.available() > 0) {
+    char ch = static_cast<char>(ftdiSerial.read());
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch == '\n') {
+      serialLine[serialLineLen] = '\0';
+      if (serialLineLen > 0) {
+        handleCommand(serialLine);
+      }
+      serialLineLen = 0;
+      continue;
+    }
+    if (serialLineLen < static_cast<int>(sizeof(serialLine) - 1)) {
+      serialLine[serialLineLen++] = ch;
+    } else {
+      serialLineLen = 0;
+    }
+  }
+}
+
+// ── Rotary encoder ────────────────────────────────────────────────────────────
+
+// ISR — called on every falling edge of CLK (pin 2).
+// Increments or decrements the step counter based on DT level.
+// Never misses a click regardless of turning speed.
+void onClkFalling() {
+  if (digitalRead(ENC_DT) == HIGH) {
+    encSteps++;   // clockwise
+  } else {
+    encSteps--;   // counter-clockwise
+  }
+}
+
+// Called from loop() — sends accumulated steps to Python.
+void pollEncoder() {
+  noInterrupts();
+  int steps = encSteps;
+  encSteps = 0;
+  interrupts();
+
+  if (steps == 0) return;
+
+  const char *msg = (steps > 0) ? "ENC:+1" : "ENC:-1";
+  int count = abs(steps);
+  for (int i = 0; i < count; i++) {
+    ftdiSerial.println(msg);
+    Serial.println(msg);
+  }
+}
+
+// ── Button ────────────────────────────────────────────────────────────────────
+
+void pollButton() {
+  int sw = digitalRead(ENC_SW);
+  if (sw != lastSw) {
+    if (sw == LOW) {
+      ftdiSerial.println("BTN:PRESS");
+      Serial.println("BTN:PRESS");
+    }
+    lastSw = sw;
+  }
+}
+
+// ── Setup & loop ──────────────────────────────────────────────────────────────
+
+void setup() {
+  Serial.begin(DEBUG_BAUD);
+  ftdiSerial.begin(FTDI_BAUD);
+
+  pinMode(ENC_CLK, INPUT_PULLUP);
+  pinMode(ENC_DT,  INPUT_PULLUP);
+  pinMode(ENC_SW,  INPUT_PULLUP);
+
+  // Attach hardware interrupt on CLK falling edge
+  attachInterrupt(digitalPinToInterrupt(ENC_CLK), onClkFalling, FALLING);
+
+  lastSw = digitalRead(ENC_SW);
+
+  delay(1200);
+  sendBanner();
+  Serial.println("vfoKnob ready — FTDI port active");
+}
+
+void loop() {
+  pollEncoder();
+  pollButton();
+  pollFtdi();
+
+  if (millis() - lastHelloMs >= 1000) {
+    sendBanner();
+  }
+}
