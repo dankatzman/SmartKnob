@@ -809,8 +809,9 @@ class RigMonitorWindow:
         freq = self._rig.get_tx_frequency()
         if freq is None:
             return
+        tx_vfo = self._rig.get_tx_vfo()
         try:
-            self._transport.write_line(f"FREQ_TX:{freq}")
+            self._transport.write_line(f"FREQ_TX:{freq}:{tx_vfo}")
         except Exception:
             self._close_knob_transport()
             self._last_knob_port = None
@@ -821,6 +822,13 @@ class RigMonitorWindow:
             omnirig_running = self._rig.is_omnirig_running()
             self._refresh_knob_connection_status()
             self._send_tx_freq_to_knob()
+            # Send both RX and sub/standby freq to Arduino for LCD display
+            if self._transport is not None and self._transport.is_connected:
+                freq_a = self._rig.read_frequency("A")
+                freq_b = self._rig.read_frequency("B")
+                active_vfo = self._rig.get_knob_display_vfo() if hasattr(self._rig, 'get_knob_display_vfo') else "A"
+                if freq_a and freq_b:
+                    self._transport.write_line(f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}")
             self._refresh_profile_file_label()
             self._refresh_loaded_models_label()
             debug = self._rig.get_debug_snapshot()
