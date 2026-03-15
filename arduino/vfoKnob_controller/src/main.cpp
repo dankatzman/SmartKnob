@@ -1,5 +1,23 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <string.h>
+#include <EEPROM.h>
+
+// ── UI State Machine ──
+enum UiState {
+  STATE_ONAIR,
+  STATE_EDIT
+};
+volatile UiState uiState = STATE_ONAIR;
+
+// ── Blinking for step edit mode ──
+unsigned long lastBlinkMs = 0;
+bool stepFieldVisible = true;
+#include <Arduino.h>
+#include <SoftwareSerial.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <string.h>
@@ -47,6 +65,7 @@ volatile int8_t  encAccum = 0;   // accumulator, reset at each detent
 // pendingHz is written by the ISR — read atomically in main loop.
 volatile long pendingHz = 0;
 
+
 // ── Frequency tracking ────────────────────────────────────────────────────────
 
 // After sending SET_FREQ, ignore LCD_FREQ updates from Python for this long.
@@ -54,9 +73,38 @@ volatile long pendingHz = 0;
 unsigned long freqTxIgnoreUntilMs = 0;
 const unsigned long FREQ_TX_IGNORE_MS = 1500;
 
+// ── Frequency Range Enforcement ──
+// These are now loaded from EEPROM; editable in future.
+#define EEPROM_FROM_ADDR 4
+#define EEPROM_UP_ADDR   8
+long rangeFromKHz = 5;   // Default: 5 kHz offset
+long rangeUpKHz   = 10;  // Default: 10 kHz offset
+
+// Returns true if freq is within the allowed range (inclusive)
+bool isFreqInRange(long baseFreq, long freq) {
+  long lower = baseFreq + rangeFromKHz * 1000L;
+  long upper = baseFreq + rangeUpKHz * 1000L;
+  return (freq >= lower && freq <= upper);
+}
+
+// Clamp freq to the allowed range
+long clampFreqToRange(long baseFreq, long freq) {
+  long lower = baseFreq + rangeFromKHz * 1000L;
+  long upper = baseFreq + rangeUpKHz * 1000L;
+  if (freq < lower) return lower;
+  if (freq > upper) return upper;
+  return freq;
+}
+
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
 volatile long stepHz = 1000;  // Hz per encoder click: 1000 = 1 kHz, 500 = 0.5 kHz
+#define EEPROM_STEP_ADDR 0
+
+// ── Step Edit Mode State ──
+unsigned long swPressStart = 0;
+bool swWasLongPressed = false;
+volatile bool stepChanged = false; // Set by ISR, handled in main loop
 
 // ── Button ────────────────────────────────────────────────────────────────────
 
@@ -85,13 +133,78 @@ char txVfo = 'A';    // which VFO is TX — updated from LCD_FREQ every cycle
 long lastLcdFreqA = -1;
 long lastLcdFreqB = -1;
 
-// ── STEP field (col 11–15, 5 chars, row 1 only) ──────────────────────────────
-// Only writeStepField() may write to col 11–15 on row 1.
+bool snapPendingA = false;
+bool snapPendingB = false;
 
-void writeStepField(long hz) {
-  const char *label = (hz >= 1000) ? " 1KHZ" : ".5KHZ";
+
+// ── FROM/UP field (col 10–15, row 0) ───────────────────────────────────────
+// Shows the range as ' 5- 8', '12-15', etc., dash always at col 13
+void writeFromUpField(long fromKHz, long upKHz) {
+  // Always clear the field first (col 10-15)
+  lcd.setCursor(10, 0);
+  lcd.print("      ");
+
+  // Enforce 1-99 only
+  if (fromKHz < 1) fromKHz = 1;
+  if (fromKHz > 99) fromKHz = 99;
+  if (upKHz < 1) upKHz = 1;
+  if (upKHz > 99) upKHz = 99;
+
+  // FROM: col 11/12
+  if (fromKHz < 10) {
+    // One digit: print at col 12
+    lcd.setCursor(12, 0);
+    lcd.print(fromKHz);
+  } else {
+    // Two digits: print at col 11/12
+    lcd.setCursor(11, 0);
+    char buf[3];
+    snprintf(buf, sizeof(buf), "%02ld", fromKHz);
+    lcd.print(buf);
+  }
+
+  // Dash at col 13
+  lcd.setCursor(13, 0);
+  lcd.print('-');
+
+  // UP: col 14/15
+  if (upKHz < 10) {
+    // One digit: print at col 14
+    lcd.setCursor(14, 0);
+    lcd.print(upKHz);
+  } else {
+    // Two digits: print at col 14/15
+    lcd.setCursor(14, 0);
+    char buf[3];
+    snprintf(buf, sizeof(buf), "%02ld", upKHz);
+    lcd.print(buf);
+  }
+}
+
+// Only writeStepField() may write to col 11–15 on row 1.
+void writeStepField(long hz, bool editing = false, bool blinkNumbers = false, bool numbersVisible = true) {
+  // Only the numbers blink, 'KHZ' is always visible
   lcd.setCursor(11, 1);
-  lcd.print(label);
+  // Always clear the field first
+  lcd.print("     ");
+  lcd.setCursor(11, 1);
+  if (hz >= 1000) {
+    // " 1KHz"
+    if (editing && blinkNumbers && !numbersVisible) {
+      lcd.print("  K");
+    } else {
+      lcd.print(" 1K");
+    }
+    lcd.print("Hz");
+  } else {
+    // ".5KHz"
+    if (editing && blinkNumbers && !numbersVisible) {
+      lcd.print("  K");
+    } else {
+      lcd.print(".5K");
+    }
+    lcd.print("Hz");
+  }
 }
 
 // ── FREQ field (col 1–9, 9 chars) ────────────────────────────────────────────
@@ -122,6 +235,14 @@ void formatFreqField(long hz, char *buf) {
 void writeFreqField(int row, long hz) {
   char buf[10];
   formatFreqField(hz, buf);
+  // In edit mode, do not show knob symbol
+  if (uiState == STATE_EDIT) {
+    lcd.setCursor(0, row);
+    lcd.print(' ');
+    lcd.setCursor(1, row);
+    lcd.print(buf);
+    return;
+  }
   // Print knob symbol (custom char 0) at col 0 if this row is being modified by the knob
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
   char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
@@ -144,7 +265,9 @@ void updateLcd() {
   lastLcdFreqA = lcdFreqA;
   lastLcdFreqB = lcdFreqB;
   writeFreqField(0, lcdFreqA);
+  writeFromUpField(rangeFromKHz, rangeUpKHz); // row 0, col 10-15
   writeFreqField(1, lcdFreqB);
+  writeStepField(stepHz, uiState == STATE_EDIT);
 }
 
 // ── Encoder ISR ───────────────────────────────────────────────────────────────
@@ -163,12 +286,48 @@ void encoderISR() {
   // Only count when encoder returns to its detent (both pins HIGH).
   // This gives exactly one count per physical click regardless of bounce.
   if (state == 3) {
-    if (encAccum >= 2) {
-      pendingHz -= stepHz;
-    } else if (encAccum <= -2) {
-      pendingHz += stepHz;
+    if (uiState == STATE_EDIT) {
+      if (encAccum >= 2 || encAccum <= -2) {
+        stepHz = (stepHz == 1000) ? 500 : 1000;
+        stepChanged = true; // Signal main loop to update LCD/serial
+        // Set snapPending for the currently tuned VFO so next knob turn snaps to new step boundary
+        bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+        char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
+        if (targetVfo == 'A') snapPendingA = true;
+        else snapPendingB = true;
+        // Do not touch LCD or Serial here!
+        lastBlinkMs = millis();
+        stepFieldVisible = true;
+      }
+      encAccum = 0; // Always reset in edit mode to prevent lockup
+    } else {
+      // Determine which VFO is being tuned
+      bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+      char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
+      long baseFreq = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
+      bool *snapPending = (targetVfo == 'A') ? &snapPendingA : &snapPendingB;
+
+      if (encAccum >= 2) { // CCW (down)
+        if (*snapPending) {
+          // Snap to the next lower step boundary
+          long snapped = (baseFreq / stepHz) * stepHz;
+          pendingHz += (snapped - baseFreq);
+          *snapPending = false;
+        } else {
+          pendingHz -= stepHz;
+        }
+      } else if (encAccum <= -2) { // CW (up)
+        if (*snapPending) {
+          // Snap to the next higher step boundary
+          long snapped = ((baseFreq + stepHz - 1) / stepHz) * stepHz;
+          pendingHz += (snapped - baseFreq);
+          *snapPending = false;
+        } else {
+          pendingHz += stepHz;
+        }
+      }
+      encAccum = 0;
     }
-    encAccum = 0;
   }
 }
 
@@ -200,11 +359,17 @@ void handleCommand(const char *line) {
     char *p = (char *)line + 9;
     bool gateOpen = (millis() >= freqTxIgnoreUntilMs);
     long newA = atol(p);
-    if (gateOpen && newA > 0) lcdFreqA = newA;
+    if (gateOpen && newA > 0) {
+      if (lcdFreqA != newA) snapPendingA = true;
+      lcdFreqA = newA;
+    }
     p = strchr(p, ':');
     if (p) {
       long newB = atol(++p);
-      if (gateOpen && newB > 0) lcdFreqB = newB;
+      if (gateOpen && newB > 0) {
+        if (lcdFreqB != newB) snapPendingB = true;
+        lcdFreqB = newB;
+      }
       p = strchr(p, ':');
       if (p) {
         if (gateOpen) lcdActiveVfo = *(++p);
@@ -248,7 +413,7 @@ void pollFreqSend() {
   long pk = pendingHz;
   interrupts();
 
-  if (pk == 0) return;
+  if (pk == 0 || uiState == STATE_EDIT) return;
 
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
   char targetVfo      = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
@@ -256,6 +421,8 @@ void pollFreqSend() {
 
   if (baseFreq > 0) {
     long newFreq = baseFreq + pk;
+    // Enforce frequency range
+    newFreq = clampFreqToRange(baseFreq, newFreq);
     ftdiSerial.print("SET_FREQ:");
     ftdiSerial.print(newFreq);
     ftdiSerial.print(":");
@@ -284,12 +451,36 @@ void pollFreqSend() {
 
 void pollButton() {
   int sw = digitalRead(ENC_SW);
-  if (sw != lastSw) {
-    if (sw == LOW) {
+  unsigned long now = millis();
+  if (sw == LOW && lastSw == HIGH) {
+    swPressStart = now;
+    swWasLongPressed = false;
+  }
+  if (sw == LOW && !swWasLongPressed && swPressStart && (now - swPressStart > 1000)) {
+    // Long press detected
+    swWasLongPressed = true;
+    if (uiState == STATE_EDIT) {
+      // Exiting edit mode: restore normal display
+      uiState = STATE_ONAIR;
+      lastBlinkMs = now;
+      stepFieldVisible = true;
+      writeStepField(stepHz, false);
+    } else {
+      // Entering edit mode
+      uiState = STATE_EDIT;
+      lastBlinkMs = now;
+      stepFieldVisible = true;
+      writeStepField(stepHz, true);
+    }
+  }
+  if (sw == HIGH && lastSw == LOW) {
+    if (!swWasLongPressed) {
       ftdiSerial.println("BTN:PRESS");
     }
-    lastSw = sw;
+    swPressStart = 0;
+    swWasLongPressed = false;
   }
+  lastSw = sw;
 }
 
 // Custom knob icon (single dot in center for reference)
@@ -309,6 +500,31 @@ byte knobChar[8] = {
 void setup() {
   ftdiSerial.begin(FTDI_BAUD);
 
+
+  // Load stepHz from EEPROM (default to 1000 if invalid)
+  long eepromStep = 0;
+  EEPROM.get(EEPROM_STEP_ADDR, eepromStep);
+  if (eepromStep == 500 || eepromStep == 1000) {
+    stepHz = eepromStep;
+  } else {
+    stepHz = 1000;
+  }
+
+  // Load rangeFromKHz and rangeUpKHz from EEPROM (default to 5 and 10 if invalid)
+  long eepromFrom = 0, eepromUp = 0;
+  EEPROM.get(EEPROM_FROM_ADDR, eepromFrom);
+  EEPROM.get(EEPROM_UP_ADDR, eepromUp);
+  if (eepromFrom > 0 && eepromFrom < 1000) {
+    rangeFromKHz = eepromFrom;
+  } else {
+    rangeFromKHz = 5;
+  }
+  if (eepromUp > 0 && eepromUp < 1000) {
+    rangeUpKHz = eepromUp;
+  } else {
+    rangeUpKHz = 10;
+  }
+
   lcd.init();
   lcd.createChar(0, knobChar); // Ensure custom char is loaded after init
   lcd.backlight();
@@ -316,7 +532,7 @@ void setup() {
   // Initialise both frequency fields to "No signal" and show initial step.
   writeFreqField(0, 0);
   writeFreqField(1, 0);
-  writeStepField(stepHz);
+  writeStepField(stepHz, false);
 
   pinMode(ENC_CLK,        INPUT_PULLUP);
   pinMode(ENC_DT,         INPUT_PULLUP);
@@ -333,11 +549,50 @@ void setup() {
   sendBanner();
 }
 
-void loop() {
+// ── State Handlers ──
+void handleOnAir() {
   pollFreqSend();
   pollButton();
   pollFtdi();
+  // Always show step field in normal mode
+  if (!stepFieldVisible) {
+    writeStepField(stepHz, false);
+    stepFieldVisible = true;
+  }
+}
 
+void handleEdit() {
+  pollButton();
+  pollFtdi();
+  // If step value changed, update LCD and send serial
+  if (stepChanged) {
+    noInterrupts();
+    stepChanged = false;
+    interrupts();
+    // Save stepHz to EEPROM
+    EEPROM.put(EEPROM_STEP_ADDR, stepHz);
+    writeStepField(stepHz, true, true, true);
+    ftdiSerial.print("STEP_EDIT: ");
+    ftdiSerial.println(stepHz);
+  }
+  // Blinking only the numbers in the step field in edit mode
+  unsigned long now = millis();
+  if (now - lastBlinkMs > 400) {
+    lastBlinkMs = now;
+    stepFieldVisible = !stepFieldVisible;
+    writeStepField(stepHz, true, true, stepFieldVisible);
+  }
+}
+
+void loop() {
+  switch (uiState) {
+    case STATE_ONAIR:
+      handleOnAir();
+      break;
+    case STATE_EDIT:
+      handleEdit();
+      break;
+  }
   if (millis() - lastHelloMs >= 1000) {
     sendBanner();
   }
