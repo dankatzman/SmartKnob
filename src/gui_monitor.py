@@ -125,7 +125,7 @@ def _widget_bg(parent: tk.Widget) -> str:
 
 
 class RigMonitorWindow:
-    def __init__(self, rig: RigAdapter, refresh_ms: int = 500) -> None:
+    def __init__(self, rig: RigAdapter, refresh_ms: int = 200) -> None:
         self._rig = rig
         self._refresh_ms = max(100, refresh_ms)
 
@@ -790,42 +790,18 @@ class RigMonitorWindow:
         # TODO: assign an action to the button press
         pass
 
-    def _send_tx_freq_to_knob(self) -> None:
-        """Send the current TX frequency to the Arduino over serial, once per interval."""
-        if self._transport is None or not self._transport.is_connected:
-            return
-        now = time.monotonic()
-        if now - self._last_freq_send < self._freq_send_interval:
-            return
-        self._last_freq_send = now
-        freq = self._rig.get_tx_frequency()
-        if freq is None:
-            return
-        tx_vfo = self._rig.get_tx_vfo()
-        try:
-            self._transport.write_line(f"FREQ_TX:{freq}:{tx_vfo}")
-        except Exception:
-            self._close_knob_transport()
-            self._last_knob_port = None
-            self._set_knob_report("Knob disconnected", ok=False)
-
     def _refresh(self) -> None:
         try:
             omnirig_running = self._rig.is_omnirig_running()
             self._refresh_knob_connection_status()
-            self._send_tx_freq_to_knob()
-            # Send both VFO frequencies to Arduino for LCD display and split-mode base
+            # Send both VFO frequencies and txVfo to Arduino every cycle
             if self._transport is not None and self._transport.is_connected:
                 freq_a = self._rig.read_frequency("A")
                 freq_b = self._rig.read_frequency("B")
                 active_vfo = self._rig.get_knob_display_vfo() if hasattr(self._rig, 'get_knob_display_vfo') else "A"
                 tx_vfo = self._rig.get_tx_vfo()
-                rx_vfo = "B" if tx_vfo == "A" else "A"
-                freq_rx = freq_b if rx_vfo == "B" else freq_a
                 if freq_a and freq_b:
-                    self._transport.write_line(f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}")
-                if freq_rx:
-                    self._transport.write_line(f"FREQ_RX:{freq_rx}:{rx_vfo}")
+                    self._transport.write_line(f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}:{tx_vfo}")
             self._refresh_profile_file_label()
             self._refresh_loaded_models_label()
             debug = self._rig.get_debug_snapshot()

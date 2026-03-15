@@ -44,23 +44,19 @@ const int8_t ENC_TABLE[16] = {
 volatile uint8_t encState = 3;   // last quadrature state
 volatile int8_t  encAccum = 0;   // accumulator, reset at each detent
 
-// pendingKhz is written by the ISR — read atomically in main loop.
-volatile long pendingKhz = 0;
+// pendingHz is written by the ISR — read atomically in main loop.
+volatile long pendingHz = 0;
 
 // ── Frequency tracking ────────────────────────────────────────────────────────
 
-long baseTxFreqHz = 0;   // TX base freq for encoder delta math
-long baseRxFreqHz = 0;   // RX base freq for encoder delta math (split mode)
-
-// After sending SET_FREQ, ignore FREQ_TX from Python for this long.
-// Prevents a stale FREQ_TX (in transit before Python processed SET_FREQ)
-// from reverting the optimistic baseTxFreqHz update.
+// After sending SET_FREQ, ignore LCD_FREQ updates from Python for this long.
+// Keeps the LCD stable while the knob is being turned.
 unsigned long freqTxIgnoreUntilMs = 0;
 const unsigned long FREQ_TX_IGNORE_MS = 1500;
 
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
-volatile long stepKhz = 1;   // kHz per encoder click — button will cycle this later
+volatile long stepHz = 1000;  // Hz per encoder click: 1000 = 1 kHz, 500 = 0.5 kHz
 
 // ── Button ────────────────────────────────────────────────────────────────────
 
@@ -68,27 +64,37 @@ int lastSw = HIGH;
 
 // ── LCD field layout ──────────────────────────────────────────────────────────
 //
-//  Col: 0 1         9 10          15
-//       ┌─┬─────────┬────────────┐
-//  Row0:│ │  FREQ A │  (future)  │
-//       ├─┼─────────┼────────────┤
-//  Row1:│ │  FREQ B │  (future)  │
-//       └─┴─────────┴────────────┘
+//  Col: 0 1         9 10 11       15
+//       ┌─┬─────────┬──┬──────────┐
+//  Row0:│ │  FREQ A │  │(future)  │
+//       ├─┼─────────┼──┼──────────┤
+//  Row1:│ │  FREQ B │  │  STEP    │
+//       └─┴─────────┴──┴──────────┘
 //
-//  FREQ field: col 1–9 (9 chars), rows 0 and 1.
-//  All other fields occupy col 9–15 and are added later.
+//  FREQ field: col 1–9  (9 chars), rows 0 and 1.
+//  STEP field: col 11–15 (5 chars), row 1 only — e.g. " 1KHZ" or ".5KHZ".
+//  Col 10 is free on both rows.
 //  Each field has exactly one write function — no other code touches its columns.
 
 // Frequencies shown on the LCD — updated by LCD_FREQ and pollFreqSend.
 long lcdFreqA = 0;
 long lcdFreqB = 0;
 char lcdActiveVfo = 'A';
-char txVfo = 'A';    // which VFO is TX — carried in FREQ_TX from Python
+char txVfo = 'A';    // which VFO is TX — updated from LCD_FREQ every cycle
 
 long lastLcdFreqA = -1;
 long lastLcdFreqB = -1;
 
-// ── FREQ field (col 0–8, 9 chars) ────────────────────────────────────────────
+// ── STEP field (col 11–15, 5 chars, row 1 only) ──────────────────────────────
+// Only writeStepField() may write to col 11–15 on row 1.
+
+void writeStepField(long hz) {
+  const char *label = (hz >= 1000) ? " 1KHZ" : ".5KHZ";
+  lcd.setCursor(11, 1);
+  lcd.print(label);
+}
+
+// ── FREQ field (col 1–9, 9 chars) ────────────────────────────────────────────
 
 // Format hz into exactly 9 chars, dot-grouped, right-aligned.
 //   < 10 MHz : " 7.100.000"  → 10 chars, but we use 9 so trim leading space
@@ -151,9 +157,9 @@ void encoderISR() {
   // This gives exactly one count per physical click regardless of bounce.
   if (state == 3) {
     if (encAccum >= 2) {
-      pendingKhz -= stepKhz;
+      pendingHz -= stepHz;
     } else if (encAccum <= -2) {
-      pendingKhz += stepKhz;
+      pendingHz += stepHz;
     }
     encAccum = 0;
   }
@@ -179,49 +185,25 @@ void handleCommand(const char *line) {
     return;
   }
 
-  // FREQ_TX:<hz>:<vfo> — TX frequency and VFO letter from Python.
-  if (strncmp(line, "FREQ_TX:", 8) == 0) {
-    char *p = (char *)line + 8;
-    long freq = atol(p);
-    char *vp = strchr(p, ':');
-    if (vp) txVfo = *(++vp);  // 'A' or 'B'
-    noInterrupts();
-    long pk = pendingKhz;
-    interrupts();
-    if (pk == 0 && millis() >= freqTxIgnoreUntilMs) {
-      baseTxFreqHz = freq;
-    }
-    return;
-  }
-
-  // FREQ_RX:<hz>:<vfo> — RX frequency and VFO letter from Python (used in split mode).
-  if (strncmp(line, "FREQ_RX:", 8) == 0) {
-    char *p = (char *)line + 8;
-    long freq = atol(p);
-    noInterrupts();
-    long pk = pendingKhz;
-    interrupts();
-    if (pk == 0 && millis() >= freqTxIgnoreUntilMs) {
-      baseRxFreqHz = freq;
-    }
-    return;
-  }
-
-  // LCD_FREQ:<freqA>:<freqB>:<activeVfo> — display frequencies from Python.
-  // Python sends this every refresh cycle with the actual confirmed radio values.
+  // LCD_FREQ:<freqA>:<freqB>:<activeVfo>:<txVfo>
+  // Python sends this every refresh cycle with confirmed radio values.
+  // Freq values are gated (ignored while knob is active).
+  // txVfo is always updated so split mode changes are instant.
   if (strncmp(line, "LCD_FREQ:", 9) == 0) {
     char *p = (char *)line + 9;
-    if (millis() >= freqTxIgnoreUntilMs) {
-      long newA = atol(p);
-      if (newA > 0) lcdFreqA = newA;
+    bool gateOpen = (millis() >= freqTxIgnoreUntilMs);
+    long newA = atol(p);
+    if (gateOpen && newA > 0) lcdFreqA = newA;
+    p = strchr(p, ':');
+    if (p) {
+      long newB = atol(++p);
+      if (gateOpen && newB > 0) lcdFreqB = newB;
       p = strchr(p, ':');
       if (p) {
-        long newB = atol(++p);
-        if (newB > 0) lcdFreqB = newB;
+        if (gateOpen) lcdActiveVfo = *(++p);
+        else ++p;
         p = strchr(p, ':');
-        if (p) {
-          lcdActiveVfo = *(++p);  // 'A' or 'B'
-        }
+        if (p) txVfo = *(++p);  // always update — no gate
       }
     }
     updateLcd();
@@ -256,23 +238,21 @@ void pollFtdi() {
 void pollFreqSend() {
   // Atomic snapshot of ISR-written pendingKhz.
   noInterrupts();
-  long pk = pendingKhz;
+  long pk = pendingHz;
   interrupts();
 
   if (pk == 0) return;
 
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
   char targetVfo      = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
-  long baseFreq       = knobControlsTx ? baseTxFreqHz : baseRxFreqHz;
+  long baseFreq       = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
 
   if (baseFreq > 0) {
-    long newFreq = baseFreq + (pk * 1000L);
+    long newFreq = baseFreq + pk;
     ftdiSerial.print("SET_FREQ:");
     ftdiSerial.print(newFreq);
     ftdiSerial.print(":");
     ftdiSerial.println(targetVfo);
-    if (knobControlsTx) baseTxFreqHz = newFreq;   // optimistic update
-    else                baseRxFreqHz = newFreq;
     freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
     // Update only the target VFO row on the LCD immediately.
     if (targetVfo == 'B') {
@@ -289,7 +269,7 @@ void pollFreqSend() {
   }
 
   noInterrupts();
-  pendingKhz = 0;
+  pendingHz = 0;
   interrupts();
 }
 
@@ -313,9 +293,10 @@ void setup() {
   lcd.init();
   lcd.backlight();
 
-  // Initialise both frequency fields to "No signal".
+  // Initialise both frequency fields to "No signal" and show initial step.
   writeFreqField(0, 0);
   writeFreqField(1, 0);
+  writeStepField(stepHz);
 
   pinMode(ENC_CLK,        INPUT_PULLUP);
   pinMode(ENC_DT,         INPUT_PULLUP);
