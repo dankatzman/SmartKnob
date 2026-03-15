@@ -73,28 +73,7 @@ volatile long pendingHz = 0;
 unsigned long freqTxIgnoreUntilMs = 0;
 const unsigned long FREQ_TX_IGNORE_MS = 1500;
 
-// ── Frequency Range Enforcement ──
-// These are now loaded from EEPROM; editable in future.
-#define EEPROM_FROM_ADDR 4
-#define EEPROM_UP_ADDR   8
-long rangeFromKHz = 5;   // Default: 5 kHz offset
-long rangeUpKHz   = 10;  // Default: 10 kHz offset
-
-// Returns true if freq is within the allowed range (inclusive)
-bool isFreqInRange(long baseFreq, long freq) {
-  long lower = baseFreq + rangeFromKHz * 1000L;
-  long upper = baseFreq + rangeUpKHz * 1000L;
-  return (freq >= lower && freq <= upper);
-}
-
-// Clamp freq to the allowed range
-long clampFreqToRange(long baseFreq, long freq) {
-  long lower = baseFreq + rangeFromKHz * 1000L;
-  long upper = baseFreq + rangeUpKHz * 1000L;
-  if (freq < lower) return lower;
-  if (freq > upper) return upper;
-  return freq;
-}
+// (Frequency range enforcement removed)
 
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
@@ -137,49 +116,7 @@ bool snapPendingA = false;
 bool snapPendingB = false;
 
 
-// ── FROM/UP field (col 10–15, row 0) ───────────────────────────────────────
-// Shows the range as ' 5- 8', '12-15', etc., dash always at col 13
-void writeFromUpField(long fromKHz, long upKHz) {
-  // Always clear the field first (col 10-15)
-  lcd.setCursor(10, 0);
-  lcd.print("      ");
-
-  // Enforce 1-99 only
-  if (fromKHz < 1) fromKHz = 1;
-  if (fromKHz > 99) fromKHz = 99;
-  if (upKHz < 1) upKHz = 1;
-  if (upKHz > 99) upKHz = 99;
-
-  // FROM: col 11/12
-  if (fromKHz < 10) {
-    // One digit: print at col 12
-    lcd.setCursor(12, 0);
-    lcd.print(fromKHz);
-  } else {
-    // Two digits: print at col 11/12
-    lcd.setCursor(11, 0);
-    char buf[3];
-    snprintf(buf, sizeof(buf), "%02ld", fromKHz);
-    lcd.print(buf);
-  }
-
-  // Dash at col 13
-  lcd.setCursor(13, 0);
-  lcd.print('-');
-
-  // UP: col 14/15
-  if (upKHz < 10) {
-    // One digit: print at col 14
-    lcd.setCursor(14, 0);
-    lcd.print(upKHz);
-  } else {
-    // Two digits: print at col 14/15
-    lcd.setCursor(14, 0);
-    char buf[3];
-    snprintf(buf, sizeof(buf), "%02ld", upKHz);
-    lcd.print(buf);
-  }
-}
+// (FROM/UP field removed)
 
 // Only writeStepField() may write to col 11–15 on row 1.
 void writeStepField(long hz, bool editing = false, bool blinkNumbers = false, bool numbersVisible = true) {
@@ -265,7 +202,7 @@ void updateLcd() {
   lastLcdFreqA = lcdFreqA;
   lastLcdFreqB = lcdFreqB;
   writeFreqField(0, lcdFreqA);
-  writeFromUpField(rangeFromKHz, rangeUpKHz); // row 0, col 10-15
+  // FROM/UP field removed
   writeFreqField(1, lcdFreqB);
   writeStepField(stepHz, uiState == STATE_EDIT);
 }
@@ -307,22 +244,30 @@ void encoderISR() {
       long baseFreq = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
       bool *snapPending = (targetVfo == 'A') ? &snapPendingA : &snapPendingB;
 
+      // Debug: print encoder action and variables
+      Serial.print("[ENC] encAccum: "); Serial.print(encAccum);
+      Serial.print(", stepHz: "); Serial.print(stepHz);
+      Serial.print(", baseFreq: "); Serial.print(baseFreq);
+      Serial.print(", snapPending: "); Serial.println(*snapPending);
+
       if (encAccum >= 2) { // CCW (down)
         if (*snapPending) {
-          // Snap to the next lower step boundary
           long snapped = (baseFreq / stepHz) * stepHz;
+          Serial.print("[ENC] Snap down. snapped: "); Serial.println(snapped);
           pendingHz += (snapped - baseFreq);
           *snapPending = false;
         } else {
+          Serial.println("[ENC] Step down.");
           pendingHz -= stepHz;
         }
       } else if (encAccum <= -2) { // CW (up)
         if (*snapPending) {
-          // Snap to the next higher step boundary
           long snapped = ((baseFreq + stepHz - 1) / stepHz) * stepHz;
+          Serial.print("[ENC] Snap up. snapped: "); Serial.println(snapped);
           pendingHz += (snapped - baseFreq);
           *snapPending = false;
         } else {
+          Serial.println("[ENC] Step up.");
           pendingHz += stepHz;
         }
       }
@@ -421,12 +366,23 @@ void pollFreqSend() {
 
   if (baseFreq > 0) {
     long newFreq = baseFreq + pk;
-    // Enforce frequency range
-    newFreq = clampFreqToRange(baseFreq, newFreq);
     ftdiSerial.print("SET_FREQ:");
     ftdiSerial.print(newFreq);
     ftdiSerial.print(":");
     ftdiSerial.println(targetVfo);
+    // Also print to Serial for debug monitor
+    Serial.print("SET_FREQ:");
+    Serial.print(newFreq);
+    Serial.print(":");
+    Serial.println(targetVfo);
+    Serial.print("DEBUG: stepHz=");
+    Serial.print(stepHz);
+    Serial.print(", pk=");
+    Serial.print(pk);
+    Serial.print(", baseFreq=");
+    Serial.print(baseFreq);
+    Serial.print(", newFreq=");
+    Serial.println(newFreq);
     freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
     // Update only the target VFO row on the LCD immediately.
     if (targetVfo == 'B') {
@@ -498,6 +454,10 @@ byte knobChar[8] = {
 // ── Setup & loop ──────────────────────────────────────────────────────────────
 
 void setup() {
+  Serial.begin(115200); // Ensure Serial is initialized for debug output
+  // DO NOT REMOVE OR MODIFY THE LINE BELOW!
+  // This message is required for verifying serial monitor operation.
+  Serial.println("Arduino started. Serial is working!");
   ftdiSerial.begin(FTDI_BAUD);
 
 
@@ -510,20 +470,7 @@ void setup() {
     stepHz = 1000;
   }
 
-  // Load rangeFromKHz and rangeUpKHz from EEPROM (default to 5 and 10 if invalid)
-  long eepromFrom = 0, eepromUp = 0;
-  EEPROM.get(EEPROM_FROM_ADDR, eepromFrom);
-  EEPROM.get(EEPROM_UP_ADDR, eepromUp);
-  if (eepromFrom > 0 && eepromFrom < 1000) {
-    rangeFromKHz = eepromFrom;
-  } else {
-    rangeFromKHz = 5;
-  }
-  if (eepromUp > 0 && eepromUp < 1000) {
-    rangeUpKHz = eepromUp;
-  } else {
-    rangeUpKHz = 10;
-  }
+  // (FROM/UP EEPROM and debug print removed)
 
   lcd.init();
   lcd.createChar(0, knobChar); // Ensure custom char is loaded after init
