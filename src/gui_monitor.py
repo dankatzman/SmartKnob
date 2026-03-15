@@ -525,8 +525,8 @@ class RigMonitorWindow:
                 if line is None:
                     continue
                 if line.startswith("SET_FREQ:"):
-                    hz_str = line[9:]
-                    self._root.after(0, lambda h=hz_str: self._on_set_freq(h))
+                    payload = line[9:]
+                    self._root.after(0, lambda p=payload: self._on_set_freq(p))
                 elif line == "NO_BASE_FREQ":
                     self._root.after(0, self._on_no_base_freq)
                 elif line == "BTN:PRESS":
@@ -759,26 +759,18 @@ class RigMonitorWindow:
         self._knob_status_until = time.monotonic() + 2.0
 
 
-    def _on_set_freq(self, hz_str: str) -> None:
-        """Called when the Arduino sends SET_FREQ:<hz> after the user stops turning."""
+    def _on_set_freq(self, payload: str) -> None:
+        """Called when the Arduino sends SET_FREQ:<hz>:<vfo>."""
         try:
-            hz = int(hz_str)
+            parts = payload.split(":")
+            hz = int(parts[0])
+            vfo = parts[1] if len(parts) > 1 else self._rig.get_knob_display_vfo()
             if hz <= 0:
                 return
-            split = self._rig.read_split_mode()
-            if split:
-                vfo = self._rig.get_tx_vfo()
-                # Only update the TX field, do not touch RX
-                if vfo == "A":
-                    self._vfo_a_var.set(_fmt_hz(hz))
-                elif vfo == "B":
-                    self._vfo_b_var.set(_fmt_hz(hz))
-            else:
-                vfo = self._rig.get_knob_display_vfo()
-                if vfo == "A":
-                    self._vfo_a_var.set(_fmt_hz(hz))
-                elif vfo == "B":
-                    self._vfo_b_var.set(_fmt_hz(hz))
+            if vfo == "A":
+                self._vfo_a_var.set(_fmt_hz(hz))
+            elif vfo == "B":
+                self._vfo_b_var.set(_fmt_hz(hz))
             self._pending_freq_hz = hz
             self._current_freq_var.set(_fmt_hz(hz))
             self._rig.set_frequency(hz, vfo)
@@ -822,13 +814,18 @@ class RigMonitorWindow:
             omnirig_running = self._rig.is_omnirig_running()
             self._refresh_knob_connection_status()
             self._send_tx_freq_to_knob()
-            # Send both RX and sub/standby freq to Arduino for LCD display
+            # Send both VFO frequencies to Arduino for LCD display and split-mode base
             if self._transport is not None and self._transport.is_connected:
                 freq_a = self._rig.read_frequency("A")
                 freq_b = self._rig.read_frequency("B")
                 active_vfo = self._rig.get_knob_display_vfo() if hasattr(self._rig, 'get_knob_display_vfo') else "A"
+                tx_vfo = self._rig.get_tx_vfo()
+                rx_vfo = "B" if tx_vfo == "A" else "A"
+                freq_rx = freq_b if rx_vfo == "B" else freq_a
                 if freq_a and freq_b:
                     self._transport.write_line(f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}")
+                if freq_rx:
+                    self._transport.write_line(f"FREQ_RX:{freq_rx}:{rx_vfo}")
             self._refresh_profile_file_label()
             self._refresh_loaded_models_label()
             debug = self._rig.get_debug_snapshot()

@@ -18,6 +18,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 const int ENC_CLK = 2;  // CLK (A) — INT0
 const int ENC_DT  = 3;  // DT  (B) — INT1
 const int ENC_SW  = 6;  // Push button
+const int KNOB_TARGET_SW = 4;  // Toggle: HIGH = knob tunes TX, LOW = knob tunes RX
 
 // Identification banner sent to Python over FTDI
 const char *ARDUINO_BANNER = "HELLO_ARDUINO:VFOKNOB";
@@ -49,6 +50,7 @@ volatile long pendingKhz = 0;
 // ── Frequency tracking ────────────────────────────────────────────────────────
 
 long baseTxFreqHz = 0;   // TX base freq for encoder delta math
+long baseRxFreqHz = 0;   // RX base freq for encoder delta math (split mode)
 
 // After sending SET_FREQ, ignore FREQ_TX from Python for this long.
 // Prevents a stale FREQ_TX (in transit before Python processed SET_FREQ)
@@ -192,6 +194,19 @@ void handleCommand(const char *line) {
     return;
   }
 
+  // FREQ_RX:<hz>:<vfo> — RX frequency and VFO letter from Python (used in split mode).
+  if (strncmp(line, "FREQ_RX:", 8) == 0) {
+    char *p = (char *)line + 8;
+    long freq = atol(p);
+    noInterrupts();
+    long pk = pendingKhz;
+    interrupts();
+    if (pk == 0 && millis() >= freqTxIgnoreUntilMs) {
+      baseRxFreqHz = freq;
+    }
+    return;
+  }
+
   // LCD_FREQ:<freqA>:<freqB>:<activeVfo> — display frequencies from Python.
   // Python sends this every refresh cycle with the actual confirmed radio values.
   if (strncmp(line, "LCD_FREQ:", 9) == 0) {
@@ -246,22 +261,27 @@ void pollFreqSend() {
 
   if (pk == 0) return;
 
-  if (baseTxFreqHz > 0) {
-    long newFreq = baseTxFreqHz + (pk * 1000L);
+  bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+  char targetVfo      = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
+  long baseFreq       = knobControlsTx ? baseTxFreqHz : baseRxFreqHz;
+
+  if (baseFreq > 0) {
+    long newFreq = baseFreq + (pk * 1000L);
     ftdiSerial.print("SET_FREQ:");
-    ftdiSerial.println(newFreq);
-    baseTxFreqHz = newFreq;          // optimistic update
+    ftdiSerial.print(newFreq);
+    ftdiSerial.print(":");
+    ftdiSerial.println(targetVfo);
+    if (knobControlsTx) baseTxFreqHz = newFreq;   // optimistic update
+    else                baseRxFreqHz = newFreq;
     freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
-    // Immediately reflect the new frequency on the TX row only.
-    // Do NOT call updateLcd() — that would touch the non-TX row which may
-    // still be 0 (not yet received from Python) and write "No signal" there.
-    if (txVfo == 'B') {
+    // Update only the target VFO row on the LCD immediately.
+    if (targetVfo == 'B') {
       lcdFreqB = newFreq;
-      lastLcdFreqB = newFreq;   // keep cache in sync
+      lastLcdFreqB = newFreq;
       writeFreqField(1, newFreq);
     } else {
       lcdFreqA = newFreq;
-      lastLcdFreqA = newFreq;   // keep cache in sync
+      lastLcdFreqA = newFreq;
       writeFreqField(0, newFreq);
     }
   } else {
@@ -297,9 +317,10 @@ void setup() {
   writeFreqField(0, 0);
   writeFreqField(1, 0);
 
-  pinMode(ENC_CLK, INPUT_PULLUP);
-  pinMode(ENC_DT,  INPUT_PULLUP);
-  pinMode(ENC_SW,  INPUT_PULLUP);
+  pinMode(ENC_CLK,        INPUT_PULLUP);
+  pinMode(ENC_DT,         INPUT_PULLUP);
+  pinMode(ENC_SW,         INPUT_PULLUP);
+  pinMode(KNOB_TARGET_SW, INPUT_PULLUP);
 
   encState = (digitalRead(ENC_CLK) << 1) | digitalRead(ENC_DT);
   lastSw   = digitalRead(ENC_SW);
