@@ -122,12 +122,16 @@ void formatFreqField(long hz, char *buf) {
 void writeFreqField(int row, long hz) {
   char buf[10];
   formatFreqField(hz, buf);
-  // Print '+' at col 0 if this row is being modified by the knob
+  // Print knob symbol (custom char 0) at col 0 if this row is being modified by the knob
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
   char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
   bool isTargetRow = (row == 1 && targetVfo == 'B') || (row == 0 && targetVfo == 'A');
   lcd.setCursor(0, row);
-  lcd.print(isTargetRow ? '+' : ' ');
+  if (isTargetRow) {
+    lcd.write(byte(0)); // knob symbol
+  } else {
+    lcd.print(' ');
+  }
   lcd.setCursor(1, row);
   lcd.print(buf);
 }
@@ -288,12 +292,25 @@ void pollButton() {
   }
 }
 
+// Custom knob icon (single dot in center for reference)
+byte knobChar[8] = {
+  0b00000,
+  0b01110,
+  0b10001,
+  0b10101,
+  0b10101,
+  0b10001,
+  0b01110,
+  0b00000
+};
+
 // ── Setup & loop ──────────────────────────────────────────────────────────────
 
 void setup() {
   ftdiSerial.begin(FTDI_BAUD);
 
   lcd.init();
+  lcd.createChar(0, knobChar); // Ensure custom char is loaded after init
   lcd.backlight();
 
   // Initialise both frequency fields to "No signal" and show initial step.
@@ -325,3 +342,4 @@ void loop() {
     sendBanner();
   }
 }
+
