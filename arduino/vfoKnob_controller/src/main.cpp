@@ -509,8 +509,40 @@ void handleOnAir() {
 }
 
 void handleEdit() {
-  pollButton();
-  pollFtdi();
+  // Only handle step editing, blinking, and exiting edit mode
+  // Handle button for exiting edit mode and step changes
+  int sw = digitalRead(ENC_SW);
+  unsigned long now = millis();
+  static int lastSw = HIGH;
+  static unsigned long swPressStart = 0;
+  static bool swWasLongPressed = false;
+  // Button logic for entering and exiting edit mode (long press)
+  static bool firstEditFrame = true;
+  if (firstEditFrame) {
+    updateLcd(); // Hide wheel icon immediately on entering edit mode
+    firstEditFrame = false;
+  }
+  if (sw == LOW && lastSw == HIGH) {
+    swPressStart = now;
+    swWasLongPressed = false;
+  }
+  if (sw == LOW && !swWasLongPressed && swPressStart && (now - swPressStart > 1000)) {
+    // Long press detected: exit edit mode
+    swWasLongPressed = true;
+    uiState = STATE_ONAIR;
+    lastBlinkMs = now;
+    stepFieldVisible = true;
+    writeStepField(stepHz, false);
+    updateLcd(); // Ensure wheel icon reappears
+    firstEditFrame = true;
+    return;
+  }
+  if (sw == HIGH && lastSw == LOW) {
+    swPressStart = 0;
+    swWasLongPressed = false;
+  }
+  lastSw = sw;
+
   // If step value changed, update LCD and send serial
   if (stepChanged) {
     noInterrupts();
@@ -521,13 +553,22 @@ void handleEdit() {
     writeStepField(stepHz, true, true, true);
     ftdiSerial.print("STEP_EDIT: ");
     ftdiSerial.println(stepHz);
+    updateLcd(); // Ensure wheel icon is hidden when entering edit mode
   }
-  // Blinking only the numbers in the step field in edit mode
-  unsigned long now = millis();
-  if (now - lastBlinkMs > 400) {
+  // 500ms ON, 600ms OFF blinking for the step field in edit mode
+  static bool blinkOn = true;
+  const unsigned long BLINK_ON_MS = 500;
+  const unsigned long BLINK_OFF_MS = 600;
+  if (blinkOn && (now - lastBlinkMs >= BLINK_ON_MS)) {
+    blinkOn = false;
     lastBlinkMs = now;
-    stepFieldVisible = !stepFieldVisible;
-    writeStepField(stepHz, true, true, stepFieldVisible);
+    stepFieldVisible = false;
+    writeStepField(stepHz, true, true, false);
+  } else if (!blinkOn && (now - lastBlinkMs >= BLINK_OFF_MS)) {
+    blinkOn = true;
+    lastBlinkMs = now;
+    stepFieldVisible = true;
+    writeStepField(stepHz, true, true, true);
   }
 }
 
