@@ -122,6 +122,12 @@ void formatFreqField(long hz, char *buf) {
 void writeFreqField(int row, long hz) {
   char buf[10];
   formatFreqField(hz, buf);
+  // Print '+' at col 0 if this row is being modified by the knob
+  bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+  char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
+  bool isTargetRow = (row == 1 && targetVfo == 'B') || (row == 0 && targetVfo == 'A');
+  lcd.setCursor(0, row);
+  lcd.print(isTargetRow ? '+' : ' ');
   lcd.setCursor(1, row);
   lcd.print(buf);
 }
@@ -130,14 +136,11 @@ void writeFreqField(int row, long hz) {
 
 // Redraws only the rows whose frequency has changed.
 void updateLcd() {
-  if (lcdFreqA != lastLcdFreqA) {
-    lastLcdFreqA = lcdFreqA;
-    writeFreqField(0, lcdFreqA);
-  }
-  if (lcdFreqB != lastLcdFreqB) {
-    lastLcdFreqB = lcdFreqB;
-    writeFreqField(1, lcdFreqB);
-  }
+  // Always redraw both rows so the + sign moves instantly when the toggle changes
+  lastLcdFreqA = lcdFreqA;
+  lastLcdFreqB = lcdFreqB;
+  writeFreqField(0, lcdFreqA);
+  writeFreqField(1, lcdFreqB);
 }
 
 // ── Encoder ISR ───────────────────────────────────────────────────────────────
