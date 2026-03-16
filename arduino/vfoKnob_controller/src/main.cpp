@@ -73,7 +73,20 @@ volatile long pendingHz = 0;
 unsigned long freqTxIgnoreUntilMs = 0;
 const unsigned long FREQ_TX_IGNORE_MS = 1500;
 
-// (Frequency range enforcement removed)
+// ── Frequency Range ──────────────────────────────────────────────────────────
+#define EEPROM_FROM_ADDR 4
+#define EEPROM_UP_ADDR   8
+long rangeFromKHz = 5;   // Default: 5 kHz offset
+long rangeUpKHz   = 10;  // Default: 10 kHz offset
+
+// Clamp freq to the allowed range
+long clampFreqToRange(long baseFreq, long freq) {
+  long lower = baseFreq + rangeFromKHz * 1000L;
+  long upper = baseFreq + rangeUpKHz * 1000L;
+  if (freq < lower) return lower;
+  if (freq > upper) return upper;
+  return freq;
+}
 
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
@@ -93,14 +106,14 @@ int lastSw = HIGH;
 //
 //  Col: 0 1         9 10 11       15
 //       ┌─┬─────────┬──┬──────────┐
-//  Row0:│ │  FREQ A │  │(future)  │
+//  Row0:│ │  FREQ A │  │ FROM-UP  │
 //       ├─┼─────────┼──┼──────────┤
 //  Row1:│ │  FREQ B │  │  STEP    │
 //       └─┴─────────┴──┴──────────┘
 //
 //  FREQ field: col 1–9  (9 chars), rows 0 and 1.
+//  FROM/UP field: col 10–15, row 0 — e.g. " 5-10"
 //  STEP field: col 11–15 (5 chars), row 1 only — e.g. " 1KHZ" or ".5KHZ".
-//  Col 10 is free on both rows.
 //  Each field has exactly one write function — no other code touches its columns.
 
 // Frequencies shown on the LCD — updated by LCD_FREQ and pollFreqSend.
@@ -116,7 +129,45 @@ bool snapPendingA = false;
 bool snapPendingB = false;
 
 
-// (FROM/UP field removed)
+// ── FROM/UP field (col 10–15, row 0) ─────────────────────────────────────────
+// Shows the range as ' 5- 8', '12-15', etc., dash always at col 13
+void writeFromUpField(long fromKHz, long upKHz) {
+  // Always clear the field first (col 10-15)
+  lcd.setCursor(10, 0);
+  lcd.print("      ");
+
+  // Enforce 1-99 only
+  if (fromKHz < 1) fromKHz = 1;
+  if (fromKHz > 99) fromKHz = 99;
+  if (upKHz < 1) upKHz = 1;
+  if (upKHz > 99) upKHz = 99;
+
+  // FROM: col 11/12
+  if (fromKHz < 10) {
+    lcd.setCursor(12, 0);
+    lcd.print(fromKHz);
+  } else {
+    lcd.setCursor(11, 0);
+    char buf[3];
+    snprintf(buf, sizeof(buf), "%02ld", fromKHz);
+    lcd.print(buf);
+  }
+
+  // Dash at col 13
+  lcd.setCursor(13, 0);
+  lcd.print('-');
+
+  // UP: col 14/15
+  if (upKHz < 10) {
+    lcd.setCursor(14, 0);
+    lcd.print(upKHz);
+  } else {
+    lcd.setCursor(14, 0);
+    char buf[3];
+    snprintf(buf, sizeof(buf), "%02ld", upKHz);
+    lcd.print(buf);
+  }
+}
 
 // Only writeStepField() may write to col 11–15 on row 1.
 void writeStepField(long hz, bool editing = false, bool blinkNumbers = false, bool numbersVisible = true) {
@@ -147,13 +198,6 @@ void writeStepField(long hz, bool editing = false, bool blinkNumbers = false, bo
 // ── FREQ field (col 1–9, 9 chars) ────────────────────────────────────────────
 
 // Format hz into exactly 9 chars, dot-grouped, right-aligned.
-//   < 10 MHz : " 7.100.000"  → 10 chars, but we use 9 so trim leading space
-//              "7.100.000"  ← 9 chars, 1 Hz resolution
-//   10–99 MHz: "14.195.00"  ← 9 chars, 10 Hz resolution
-//  ≥ 100 MHz : "144.000.0"  ← 9 chars, 100 Hz resolution
-// "No signal" when hz ≤ 0 (also 9 chars).
-// Format: "##.###.# " — MHz (2 digits), kHz (3 digits), 100Hz (1 digit), trailing space.
-// Examples: "14.195.0 "  " 7.100.5 "  " 1.800.0 "
 void formatFreqField(long hz, char *buf) {
   // buf must hold 10 bytes (9 chars + null terminator)
   if (hz <= 0) {
@@ -168,7 +212,7 @@ void formatFreqField(long hz, char *buf) {
   buf[9] = '\0';
 }
 
-// Write the frequency field for one row. Only touches col 0–8.
+// Write the frequency field for one row. Only touches col 0–9.
 void writeFreqField(int row, long hz) {
   char buf[10];
   formatFreqField(hz, buf);
@@ -196,13 +240,12 @@ void writeFreqField(int row, long hz) {
 
 // ── LCD update ────────────────────────────────────────────────────────────────
 
-// Redraws only the rows whose frequency has changed.
 void updateLcd() {
-  // Always redraw both rows so the + sign moves instantly when the toggle changes
+  // Always redraw both rows so the knob symbol moves instantly when the toggle changes
   lastLcdFreqA = lcdFreqA;
   lastLcdFreqB = lcdFreqB;
   writeFreqField(0, lcdFreqA);
-  // FROM/UP field removed
+  writeFromUpField(rangeFromKHz, rangeUpKHz); // row 0, col 10-15
   writeFreqField(1, lcdFreqB);
   writeStepField(stepHz, uiState == STATE_EDIT);
 }
@@ -232,7 +275,6 @@ void encoderISR() {
         char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
         if (targetVfo == 'A') snapPendingA = true;
         else snapPendingB = true;
-        // Do not touch LCD or Serial here!
         lastBlinkMs = millis();
         stepFieldVisible = true;
       }
@@ -244,30 +286,20 @@ void encoderISR() {
       long baseFreq = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
       bool *snapPending = (targetVfo == 'A') ? &snapPendingA : &snapPendingB;
 
-      // Debug: print encoder action and variables
-      Serial.print("[ENC] encAccum: "); Serial.print(encAccum);
-      Serial.print(", stepHz: "); Serial.print(stepHz);
-      Serial.print(", baseFreq: "); Serial.print(baseFreq);
-      Serial.print(", snapPending: "); Serial.println(*snapPending);
-
       if (encAccum >= 2) { // CCW (down)
         if (*snapPending) {
           long snapped = (baseFreq / stepHz) * stepHz;
-          Serial.print("[ENC] Snap down. snapped: "); Serial.println(snapped);
           pendingHz += (snapped - baseFreq);
           *snapPending = false;
         } else {
-          Serial.println("[ENC] Step down.");
           pendingHz -= stepHz;
         }
       } else if (encAccum <= -2) { // CW (up)
         if (*snapPending) {
           long snapped = ((baseFreq + stepHz - 1) / stepHz) * stepHz;
-          Serial.print("[ENC] Snap up. snapped: "); Serial.println(snapped);
           pendingHz += (snapped - baseFreq);
           *snapPending = false;
         } else {
-          Serial.println("[ENC] Step up.");
           pendingHz += stepHz;
         }
       }
@@ -353,7 +385,7 @@ void pollFtdi() {
 // ── Deferred frequency send ───────────────────────────────────────────────────
 
 void pollFreqSend() {
-  // Atomic snapshot of ISR-written pendingKhz.
+  // Atomic snapshot of ISR-written pendingHz.
   noInterrupts();
   long pk = pendingHz;
   interrupts();
@@ -370,19 +402,6 @@ void pollFreqSend() {
     ftdiSerial.print(newFreq);
     ftdiSerial.print(":");
     ftdiSerial.println(targetVfo);
-    // Also print to Serial for debug monitor
-    Serial.print("SET_FREQ:");
-    Serial.print(newFreq);
-    Serial.print(":");
-    Serial.println(targetVfo);
-    Serial.print("DEBUG: stepHz=");
-    Serial.print(stepHz);
-    Serial.print(", pk=");
-    Serial.print(pk);
-    Serial.print(", baseFreq=");
-    Serial.print(baseFreq);
-    Serial.print(", newFreq=");
-    Serial.println(newFreq);
     freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
     // Update only the target VFO row on the LCD immediately.
     if (targetVfo == 'B') {
@@ -439,7 +458,7 @@ void pollButton() {
   lastSw = sw;
 }
 
-// Custom knob icon (single dot in center for reference)
+// Custom knob icon (circle with center dot)
 byte knobChar[8] = {
   0b00000,
   0b01110,
@@ -454,12 +473,11 @@ byte knobChar[8] = {
 // ── Setup & loop ──────────────────────────────────────────────────────────────
 
 void setup() {
-  Serial.begin(115200); // Ensure Serial is initialized for debug output
+  Serial.begin(115200);
   // DO NOT REMOVE OR MODIFY THE LINE BELOW!
   // This message is required for verifying serial monitor operation.
   Serial.println("Arduino started. Serial is working!");
   ftdiSerial.begin(FTDI_BAUD);
-
 
   // Load stepHz from EEPROM (default to 1000 if invalid)
   long eepromStep = 0;
@@ -470,7 +488,20 @@ void setup() {
     stepHz = 1000;
   }
 
-  // (FROM/UP EEPROM and debug print removed)
+  // Load rangeFromKHz and rangeUpKHz from EEPROM (default to 5 and 10 if invalid)
+  long eepromFrom = 0, eepromUp = 0;
+  EEPROM.get(EEPROM_FROM_ADDR, eepromFrom);
+  EEPROM.get(EEPROM_UP_ADDR, eepromUp);
+  if (eepromFrom > 0 && eepromFrom < 100) {
+    rangeFromKHz = eepromFrom;
+  } else {
+    rangeFromKHz = 5;
+  }
+  if (eepromUp > 0 && eepromUp < 100) {
+    rangeUpKHz = eepromUp;
+  } else {
+    rangeUpKHz = 10;
+  }
 
   lcd.init();
   lcd.createChar(0, knobChar); // Ensure custom char is loaded after init
@@ -478,6 +509,7 @@ void setup() {
 
   // Initialise both frequency fields to "No signal" and show initial step.
   writeFreqField(0, 0);
+  writeFromUpField(rangeFromKHz, rangeUpKHz);
   writeFreqField(1, 0);
   writeStepField(stepHz, false);
 
@@ -496,7 +528,8 @@ void setup() {
   sendBanner();
 }
 
-// ── State Handlers ──
+// ── State Handlers ────────────────────────────────────────────────────────────
+
 void handleOnAir() {
   pollFreqSend();
   pollButton();
@@ -509,15 +542,16 @@ void handleOnAir() {
 }
 
 void handleEdit() {
-  // Only handle step editing, blinking, and exiting edit mode
-  // Handle button for exiting edit mode and step changes
+  pollFtdi();
+
+  // Button handling (inline for edit mode — long press exits)
   int sw = digitalRead(ENC_SW);
   unsigned long now = millis();
   static int lastSw = HIGH;
   static unsigned long swPressStart = 0;
   static bool swWasLongPressed = false;
-  // Button logic for entering and exiting edit mode (long press)
   static bool firstEditFrame = true;
+
   if (firstEditFrame) {
     updateLcd(); // Hide wheel icon immediately on entering edit mode
     firstEditFrame = false;
@@ -527,13 +561,13 @@ void handleEdit() {
     swWasLongPressed = false;
   }
   if (sw == LOW && !swWasLongPressed && swPressStart && (now - swPressStart > 1000)) {
-    // Long press detected: exit edit mode
+    // Long press: exit edit mode
     swWasLongPressed = true;
     uiState = STATE_ONAIR;
     lastBlinkMs = now;
     stepFieldVisible = true;
     writeStepField(stepHz, false);
-    updateLcd(); // Ensure wheel icon reappears
+    updateLcd(); // Reappear wheel icon
     firstEditFrame = true;
     return;
   }
@@ -548,16 +582,16 @@ void handleEdit() {
     noInterrupts();
     stepChanged = false;
     interrupts();
-    // Save stepHz to EEPROM
     EEPROM.put(EEPROM_STEP_ADDR, stepHz);
     writeStepField(stepHz, true, true, true);
     ftdiSerial.print("STEP_EDIT: ");
     ftdiSerial.println(stepHz);
-    updateLcd(); // Ensure wheel icon is hidden when entering edit mode
+    updateLcd();
   }
-  // 500ms ON, 600ms OFF blinking for the step field in edit mode
+
+  // Blink the step field numbers: 500ms on, 600ms off
   static bool blinkOn = true;
-  const unsigned long BLINK_ON_MS = 500;
+  const unsigned long BLINK_ON_MS  = 500;
   const unsigned long BLINK_OFF_MS = 600;
   if (blinkOn && (now - lastBlinkMs >= BLINK_ON_MS)) {
     blinkOn = false;
@@ -585,4 +619,3 @@ void loop() {
     sendBanner();
   }
 }
-
