@@ -128,6 +128,10 @@ long lastLcdFreqB = -1;
 bool snapPendingA = false;
 bool snapPendingB = false;
 
+// ── Edit Mode Parameter Selection ────────────────────────────────────────────
+enum EditParam { EDIT_STEP = 0, EDIT_FROM = 1, EDIT_UP = 2 };
+EditParam editParam = EDIT_STEP;
+volatile int8_t editDirection = 0; // set by ISR in edit mode: 1=up, -1=down
 
 // ── FROM/UP field (col 10–15, row 0) ─────────────────────────────────────────
 // Shows the range as ' 5- 8', '12-15', etc., dash always at col 13
@@ -166,6 +170,49 @@ void writeFromUpField(long fromKHz, long upKHz) {
     char buf[3];
     snprintf(buf, sizeof(buf), "%02ld", upKHz);
     lcd.print(buf);
+  }
+}
+
+// Like writeFromUpField() but one number can blink independently.
+// blinkFrom/blinkUp: true = this number is the blinking one.
+// numbersVisible: false = hide the blinking number.
+void writeFromUpFieldBlink(long fromKHz, long upKHz, bool blinkFrom, bool blinkUp, bool numbersVisible) {
+  lcd.setCursor(10, 0);
+  lcd.print("      ");
+
+  if (fromKHz < 1) fromKHz = 1;
+  if (fromKHz > 99) fromKHz = 99;
+  if (upKHz < 1) upKHz = 1;
+  if (upKHz > 99) upKHz = 99;
+
+  // FROM: col 11/12
+  if (!blinkFrom || numbersVisible) {
+    if (fromKHz < 10) {
+      lcd.setCursor(12, 0);
+      lcd.print(fromKHz);
+    } else {
+      lcd.setCursor(11, 0);
+      char buf[3];
+      snprintf(buf, sizeof(buf), "%02ld", fromKHz);
+      lcd.print(buf);
+    }
+  }
+
+  // Dash always visible at col 13
+  lcd.setCursor(13, 0);
+  lcd.print('-');
+
+  // UP: col 14/15
+  if (!blinkUp || numbersVisible) {
+    if (upKHz < 10) {
+      lcd.setCursor(14, 0);
+      lcd.print(upKHz);
+    } else {
+      lcd.setCursor(14, 0);
+      char buf[3];
+      snprintf(buf, sizeof(buf), "%02ld", upKHz);
+      lcd.print(buf);
+    }
   }
 }
 
@@ -267,18 +314,14 @@ void encoderISR() {
   // This gives exactly one count per physical click regardless of bounce.
   if (state == 3) {
     if (uiState == STATE_EDIT) {
-      if (encAccum >= 2 || encAccum <= -2) {
-        stepHz = (stepHz == 1000) ? 500 : 1000;
-        stepChanged = true; // Signal main loop to update LCD/serial
-        // Set snapPending for the currently tuned VFO so next knob turn snaps to new step boundary
-        bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
-        char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
-        if (targetVfo == 'A') snapPendingA = true;
-        else snapPendingB = true;
-        lastBlinkMs = millis();
-        stepFieldVisible = true;
+      if (encAccum >= 2) {
+        editDirection = -1; // CCW = down
+        stepChanged = true;
+      } else if (encAccum <= -2) {
+        editDirection = 1;  // CW = up
+        stepChanged = true;
       }
-      encAccum = 0; // Always reset in edit mode to prevent lockup
+      encAccum = 0;
     } else {
       // Determine which VFO is being tuned
       bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
@@ -355,7 +398,9 @@ void handleCommand(const char *line) {
         if (p) txVfo = *(++p);  // always update — no gate
       }
     }
-    updateLcd();
+    if (uiState != STATE_EDIT) {
+      updateLcd();
+    }
     return;
   }
 }
@@ -544,65 +589,146 @@ void handleOnAir() {
 void handleEdit() {
   pollFtdi();
 
-  // Button handling (inline for edit mode — long press exits)
   int sw = digitalRead(ENC_SW);
   unsigned long now = millis();
   static int lastSw = HIGH;
   static unsigned long swPressStart = 0;
   static bool swWasLongPressed = false;
   static bool firstEditFrame = true;
-
-  if (firstEditFrame) {
-    updateLcd(); // Hide wheel icon immediately on entering edit mode
-    firstEditFrame = false;
-  }
-  if (sw == LOW && lastSw == HIGH) {
-    swPressStart = now;
-    swWasLongPressed = false;
-  }
-  if (sw == LOW && !swWasLongPressed && swPressStart && (now - swPressStart > 1000)) {
-    // Long press: exit edit mode
-    swWasLongPressed = true;
-    uiState = STATE_ONAIR;
-    lastBlinkMs = now;
-    stepFieldVisible = true;
-    writeStepField(stepHz, false);
-    updateLcd(); // Reappear wheel icon
-    firstEditFrame = true;
-    return;
-  }
-  if (sw == HIGH && lastSw == LOW) {
-    swPressStart = 0;
-    swWasLongPressed = false;
-  }
-  lastSw = sw;
-
-  // If step value changed, update LCD and send serial
-  if (stepChanged) {
-    noInterrupts();
-    stepChanged = false;
-    interrupts();
-    EEPROM.put(EEPROM_STEP_ADDR, stepHz);
-    writeStepField(stepHz, true, true, true);
-    ftdiSerial.print("STEP_EDIT: ");
-    ftdiSerial.println(stepHz);
-    updateLcd();
-  }
-
-  // Blink the step field numbers: 500ms on, 600ms off
+  static bool waitForRelease = false;
   static bool blinkOn = true;
   const unsigned long BLINK_ON_MS  = 500;
   const unsigned long BLINK_OFF_MS = 600;
+
+  // ── First frame: reset state, wait for button release ──
+  if (firstEditFrame) {
+    editParam = EDIT_STEP;
+    blinkOn = true;
+    lastBlinkMs = now;
+    waitForRelease = true; // button still held from long press — ignore until released
+    updateLcd();           // hide wheel icon immediately
+    firstEditFrame = false;
+  }
+
+  // ── Wait for button to be released before accepting any input ──
+  if (waitForRelease) {
+    if (sw == HIGH) {
+      waitForRelease = false;
+      lastSw = HIGH;
+      swPressStart = 0;
+      swWasLongPressed = false;
+    } else {
+      lastSw = sw;
+      // fall through to blink logic below
+    }
+  }
+
+  if (!waitForRelease) {
+    // ── Button logic ──
+    if (sw == LOW && lastSw == HIGH) {
+      swPressStart = now;
+      swWasLongPressed = false;
+    }
+    if (sw == LOW && !swWasLongPressed && swPressStart && (now - swPressStart > 1000)) {
+      // Long press: save all and exit edit mode
+      swWasLongPressed = true;
+      EEPROM.put(EEPROM_STEP_ADDR, stepHz);
+      EEPROM.put(EEPROM_FROM_ADDR, rangeFromKHz);
+      EEPROM.put(EEPROM_UP_ADDR, rangeUpKHz);
+      uiState = STATE_ONAIR;
+      lastBlinkMs = now;
+      stepFieldVisible = true;
+      writeStepField(stepHz, false);
+      updateLcd(); // restore wheel icon
+      firstEditFrame = true;
+      return;
+    }
+    if (sw == HIGH && lastSw == LOW) {
+      unsigned long pressDuration = now - swPressStart;
+      if (!swWasLongPressed && pressDuration >= 50 && pressDuration < 1000) {
+        // Restore current field to steady before switching
+        switch (editParam) {
+          case EDIT_STEP: writeStepField(stepHz, true); break;
+          case EDIT_FROM:
+          case EDIT_UP:   writeFromUpField(rangeFromKHz, rangeUpKHz); break;
+        }
+        editParam = (EditParam)(((int)editParam + 1) % 3);
+        blinkOn = true;
+        lastBlinkMs = now;
+      }
+      swPressStart = 0;
+      swWasLongPressed = false;
+    }
+    lastSw = sw;
+
+    // ── Encoder: adjust active parameter ──
+    if (stepChanged) {
+      noInterrupts();
+      stepChanged = false;
+      int8_t dir = editDirection;
+      editDirection = 0;
+      interrupts();
+
+      switch (editParam) {
+        case EDIT_STEP:
+          stepHz = (stepHz == 1000) ? 500 : 1000; // toggle on any turn
+          snapPendingA = true; // next tune will snap to new step boundary
+          snapPendingB = true;
+          writeStepField(stepHz, true, true, true); // show new value immediately
+          break;
+        case EDIT_FROM:
+          rangeFromKHz += dir; // CW=+1, CCW=-1
+          if (rangeFromKHz < 1)  rangeFromKHz = 99;
+          if (rangeFromKHz > 99) rangeFromKHz = 1;
+          writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, true, false, true); // FROM only
+          break;
+        case EDIT_UP:
+          rangeUpKHz += dir;
+          if (rangeUpKHz < 1)  rangeUpKHz = 99;
+          if (rangeUpKHz > 99) rangeUpKHz = 1;
+          writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, false, true, true); // UP only
+          break;
+      }
+      blinkOn = true; // restart blink cycle so value is visible right after change
+      lastBlinkMs = now;
+    }
+  }
+
+  // ── Blink active parameter: 500ms on, 600ms off ──
   if (blinkOn && (now - lastBlinkMs >= BLINK_ON_MS)) {
     blinkOn = false;
     lastBlinkMs = now;
-    stepFieldVisible = false;
-    writeStepField(stepHz, true, true, false);
+    switch (editParam) {
+      case EDIT_STEP:
+        writeStepField(stepHz, true, true, false); // numbers hidden
+        writeFromUpField(rangeFromKHz, rangeUpKHz);
+        break;
+      case EDIT_FROM:
+        writeStepField(stepHz, true);
+        writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, true, false, false); // FROM hidden
+        break;
+      case EDIT_UP:
+        writeStepField(stepHz, true);
+        writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, false, true, false); // UP hidden
+        break;
+    }
   } else if (!blinkOn && (now - lastBlinkMs >= BLINK_OFF_MS)) {
     blinkOn = true;
     lastBlinkMs = now;
-    stepFieldVisible = true;
-    writeStepField(stepHz, true, true, true);
+    switch (editParam) {
+      case EDIT_STEP:
+        writeStepField(stepHz, true, true, true); // numbers visible
+        writeFromUpField(rangeFromKHz, rangeUpKHz);
+        break;
+      case EDIT_FROM:
+        writeStepField(stepHz, true);
+        writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, true, false, true); // FROM visible
+        break;
+      case EDIT_UP:
+        writeStepField(stepHz, true);
+        writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, false, true, true); // UP visible
+        break;
+    }
   }
 }
 
