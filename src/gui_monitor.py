@@ -126,16 +126,110 @@ def _widget_bg(parent: tk.Widget) -> str:
 
 class RigMonitorWindow:
     def __init__(self, rig: RigAdapter, refresh_ms: int = 200) -> None:
-        self._rig = rig
-        self._refresh_ms = max(100, refresh_ms)
-
-        # Track the last frequency set by Arduino (pending confirmation)
-        self._pending_freq_hz: int | None = None
-
+        # --- Create the root window first ---
         self._root = tk.Tk()
         self._root.title("vfoStepsKnob - Radio Monitor")
-        self._root.geometry("520x340")
-        self._root.minsize(480, 320)
+        self._root.attributes("-topmost", True)  # Always on top
+        self._root.minsize(320, 180)
+
+        # --- Now initialize all instance variables that depend on Tk ---
+        self._rig = rig
+        self._refresh_ms = max(100, refresh_ms)
+        self._pending_freq_hz: int | None = None
+        self._radio_type_var = tk.StringVar(value="-")
+        self._profile_file_var = tk.StringVar(value="-")
+        self._loaded_models_var = tk.StringVar(value="-")
+        self._vfo_a_name_var = tk.StringVar(value="VFO A")
+        self._vfo_b_name_var = tk.StringVar(value="VFO B")
+        self._vfo_a_var = tk.StringVar(value="-")
+        self._vfo_b_var = tk.StringVar(value="-")
+        self._current_freq_var = tk.StringVar(value="-")
+        self._vfo_route_var = tk.StringVar(value="-")
+        self._knob_target_var = tk.StringVar(value="-")
+        self._split_var = tk.StringVar(value="-")
+        self._omnirig_report_var = tk.StringVar(value="OmniRig: Checking...")
+        self._knob_report_var = tk.StringVar(value="Knob: Not connected")
+        self._debug_var = tk.StringVar(value="Debug: -")
+        self._radio_type_name_label: tk.Label | None = None
+        self._radio_type_value_label: tk.Label | None = None
+        self._vfo_a_name_label: tk.Label | None = None
+        self._vfo_a_value_label: tk.Label | None = None
+        self._vfo_a_name_container: tk.Frame | None = None
+        self._vfo_b_name_label: tk.Label | None = None
+        self._vfo_b_value_label: tk.Label | None = None
+        self._vfo_b_name_container: tk.Frame | None = None
+        self._omnirig_report_label: tk.Label | None = None
+        self._knob_report_label: tk.Label | None = None
+        self._knob_status_until: float = 0.0
+        self._last_knob_probe: float = 0.0
+        self._last_knob_port: str | None = None
+        self._probe_running: bool = False
+        self._transport: SerialTransport | None = None
+        self._last_freq_send: float = 0.0
+        self._freq_send_interval: float = 1.0
+        self._freq_fail_count: int = 0
+        self._freq_fail_threshold: int = 3
+        self._omnirig_fail_count: int = 0
+        self._omnirig_fail_threshold: int = 3
+        self._last_omnirig_report: str = ""
+        self._row_default_bg: str | None = None
+        self._calib_instruction_var = tk.StringVar(
+            value="Calibration Wizard: press Start Calibration to begin guided 4-state testing."
+        )
+        self._calib_progress_var = tk.StringVar(value="Calibration: idle")
+        self._calib_phase = "idle"
+        self._calib_index = -1
+        self._calib_current: dict[str, Any] | None = None
+        self._calib_records: list[dict[str, Any]] = []
+        self._calib_scenarios: list[dict[str, str]] = [
+            {
+                "id": "off_knob_a",
+                "title": "1/4 Split OFF, knob on A",
+                "setup": "Set split OFF and make the real radio knob control VFO A.",
+            },
+            {
+                "id": "off_knob_b",
+                "title": "2/4 Split OFF, knob on B",
+                "setup": "Set split OFF and make the real radio knob control VFO B.",
+            },
+            {
+                "id": "on_start_a",
+                "title": "3/4 Split ON, start from A",
+                "setup": "Start from knob on A, then enable split.",
+            },
+            {
+                "id": "on_start_b",
+                "title": "4/4 Split ON, start from B",
+                "setup": "Start from knob on B, then enable split.",
+            },
+        ]
+
+        # Restore window geometry if available
+        self._window_state_path = Path(__file__).resolve().parents[1] / "log_window_state.json"
+        try:
+            if self._window_state_path.exists():
+                with open(self._window_state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                    geom = state.get("geometry")
+                    if geom:
+                        self._root.geometry(geom)
+        except Exception:
+            pass
+
+        # Save geometry on close
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Build the GUI layout
+        self._build_layout()
+    def _on_close(self):
+        try:
+            geom = self._root.geometry()
+            state = {"geometry": geom}
+            with open(self._window_state_path, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+        except Exception:
+            pass
+        self._root.destroy()
 
         self._radio_type_var = tk.StringVar(value="-")
         self._profile_file_var = tk.StringVar(value="-")
@@ -211,63 +305,68 @@ class RigMonitorWindow:
 
     def _build_layout(self) -> None:
         self._root.columnconfigure(0, weight=1)
-        frame = ttk.Frame(self._root, padding=16)
+        frame = ttk.Frame(self._root, padding=6)
         frame.grid(row=0, column=0, sticky="nsew")
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=0)
         frame.columnconfigure(3, weight=0)
 
-        title = ttk.Label(frame, text="HF Radio Live Monitor", font=("Segoe UI", 17, "bold"))
-        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        title = ttk.Label(frame, text="Smart Knob", font=("Segoe UI", 15, "bold"), anchor="center", justify="center")
+        title.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 0))
+        # Remove extra padding above the frame to move header up
+        self._root.grid_rowconfigure(0, minsize=0)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(1, weight=1)
+        frame.grid_columnconfigure(2, weight=1)
+        frame.grid_columnconfigure(3, weight=1)
 
         self._radio_type_name_label, self._radio_type_value_label = self._row(frame, 1, "Radio Type", self._radio_type_var)
         self._vfo_a_name_container = tk.Frame(frame)
-        self._vfo_a_name_container.grid(row=2, column=0, sticky="w", pady=3)
+        self._vfo_a_name_container.grid(row=2, column=0, sticky="w", pady=0)
         self._vfo_a_value_label = tk.Label(frame, textvariable=self._vfo_a_var, font=("Consolas", 12), anchor="w")
-        self._vfo_a_value_label.grid(row=2, column=1, sticky="w", pady=3)
+        self._vfo_a_value_label.grid(row=2, column=1, sticky="w", pady=0)
         self._render_vfo_a_name_label()
         self._vfo_b_name_container = tk.Frame(frame)
-        self._vfo_b_name_container.grid(row=3, column=0, sticky="w", pady=3)
+        self._vfo_b_name_container.grid(row=3, column=0, sticky="w", pady=0)
         self._vfo_b_value_label = tk.Label(frame, textvariable=self._vfo_b_var, font=("Consolas", 12), anchor="w")
-        self._vfo_b_value_label.grid(row=3, column=1, sticky="w", pady=3)
+        self._vfo_b_value_label.grid(row=3, column=1, sticky="w", pady=0)
         self._render_vfo_b_name_label()
-        self._row(frame, 4, "VFO Route", self._vfo_route_var)
-        self._row(frame, 5, "Split Mode", self._split_var)
-        self._row(frame, 6, "Current Knob Frequency", self._current_freq_var)
+        self._row(frame, 4, "VFO Route", self._vfo_route_var, pady=0)
+        self._row(frame, 5, "Split Mode", self._split_var, pady=0)
+        self._row(frame, 6, "Current Knob Frequency", self._current_freq_var, pady=0)
 
         if self._radio_type_name_label is not None:
             self._radio_type_name_label.configure(font=("Segoe UI", 12, "bold"))
         if self._radio_type_value_label is not None:
             self._radio_type_value_label.configure(font=("Consolas", 13, "bold"))
 
+
+        # Add horizontal separator (dark line) above OmniRig and Knob report lines
         separator = ttk.Separator(frame, orient="horizontal")
-        separator.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(12, 8))
+        separator.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(8, 4))
 
         self._omnirig_report_label = tk.Label(
             frame,
             textvariable=self._omnirig_report_var,
             fg="#b00020",
-            font=("Segoe UI", 13, "bold"),
+            font=("Segoe UI", 11, "bold"),
             anchor="w",
         )
-        self._omnirig_report_label.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(2, 2))
+        self._omnirig_report_label.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(0, 0))
 
         self._knob_report_label = tk.Label(
             frame,
             textvariable=self._knob_report_var,
             fg="#b00020",
-            font=("Segoe UI", 13, "bold"),
+            font=("Segoe UI", 11, "bold"),
             anchor="w",
         )
-        self._knob_report_label.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(2, 2))
+        self._knob_report_label.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(0, 0))
 
-        bottom_sep = ttk.Separator(frame, orient="horizontal")
-        bottom_sep.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(12, 8))
-
-        self._row(frame, 11, "Profile File", self._profile_file_var)
-
-        profile_button = ttk.Button(frame, text="Browse Profile INI", command=self._browse_profile_file)
-        profile_button.grid(row=12, column=0, sticky="w", pady=(8, 0))
+        # The following lines are hidden from the UI but remain in the code for future use:
+        # self._row(frame, 10, "Profile File", self._profile_file_var, pady=0)
+        # profile_button = ttk.Button(frame, text="Browse Profile INI", command=self._browse_profile_file)
+        # profile_button.grid(row=11, column=0, sticky="w", pady=(4, 0))
 
         if self._vfo_b_name_container is not None:
             self._row_default_bg = self._vfo_b_name_container.cget("bg")
@@ -710,7 +809,7 @@ class RigMonitorWindow:
         )
 
     @staticmethod
-    def _row(parent: ttk.Frame, row: int, label: str | tk.StringVar, var: tk.StringVar) -> tuple[tk.Label, tk.Label]:
+    def _row(parent: ttk.Frame, row: int, label: str | tk.StringVar, var: tk.StringVar, pady=0) -> tuple[tk.Label, tk.Label]:
         if isinstance(label, tk.StringVar):
             name_label = tk.Label(parent, textvariable=label, font=("Segoe UI", 11, "bold"), anchor="w")
         else:
@@ -719,14 +818,14 @@ class RigMonitorWindow:
             row=row,
             column=0,
             sticky="w",
-            pady=3,
+            pady=pady,
         )
         value_label = tk.Label(parent, textvariable=var, font=("Consolas", 12), anchor="w")
         value_label.grid(
             row=row,
             column=1,
             sticky="w",
-            pady=3,
+            pady=pady,
         )
         return name_label, value_label
 
