@@ -37,6 +37,7 @@ const int ENC_CLK = 2;  // CLK (A) — INT0
 const int ENC_DT  = 3;  // DT  (B) — INT1
 const int ENC_SW  = 6;  // Push button
 const int KNOB_TARGET_SW = 4;  // Toggle: HIGH = knob tunes TX, LOW = knob tunes RX
+const int LED_COMM_PIN   = 10; // ON while Python is actively sending commands
 
 // Identification banner sent to Python over FTDI
 const char *ARDUINO_BANNER = "HELLO_ARDUINO:VFOKNOB";
@@ -47,6 +48,10 @@ int  serialLineLen = 0;
 
 // Timestamp of last banner sent
 unsigned long lastHelloMs = 0;
+
+// Timestamp of last valid command received from Python (for comm LED)
+unsigned long lastPythonMsgMs = 0;
+const unsigned long COMM_TIMEOUT_MS = 3000;
 
 // ── Rotary encoder — interrupt-driven quadrature state machine ────────────────
 // Quadrature lookup table.
@@ -361,6 +366,8 @@ void sendBanner() {
 // ── Command handler ───────────────────────────────────────────────────────────
 
 void handleCommand(const char *line) {
+  lastPythonMsgMs = millis(); // any valid command = Python is alive
+
   if (strcmp(line, "WHO") == 0) {
     sendBanner();
     return;
@@ -558,6 +565,9 @@ void setup() {
   writeFreqField(1, 0);
   writeStepField(stepHz, false);
 
+  pinMode(LED_COMM_PIN,   OUTPUT);
+  digitalWrite(LED_COMM_PIN, LOW);
+
   pinMode(ENC_CLK,        INPUT_PULLUP);
   pinMode(ENC_DT,         INPUT_PULLUP);
   pinMode(ENC_SW,         INPUT_PULLUP);
@@ -744,4 +754,5 @@ void loop() {
   if (millis() - lastHelloMs >= 1000) {
     sendBanner();
   }
+  digitalWrite(LED_COMM_PIN, (millis() - lastPythonMsgMs < COMM_TIMEOUT_MS) ? HIGH : LOW);
 }
