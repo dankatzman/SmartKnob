@@ -502,18 +502,23 @@ class RigAdapter:
 
 		if self._is_wrapper_backend():
 			status = self._safe_int(self._get_param("Status"))
-			if status is None or status == 3:
-				return None
 
 			f_a = self._safe_int(self._get_param("FreqA"))
 			f_b = self._safe_int(self._get_param("FreqB"))
-			if f_a is None or f_b is None:
-				return None
 
-			if f_a > 0:
+			# If we got valid frequencies, use them regardless of status.
+			# OmniRig can return cached values (and accept SET commands) even
+			# when status == 3 ("not responding"), so don't gate on status alone.
+			if f_a is not None and f_a > 0:
 				self._state.freq_a_hz = f_a
-			if f_b > 0:
+			if f_b is not None and f_b > 0:
 				self._state.freq_b_hz = f_b
+
+			# Only give up if status is definitively bad AND we have no usable data.
+			if (f_a is None or f_a <= 0) and (f_b is None or f_b <= 0):
+				if status is None or status == 3:
+					return None
+
 			return self._state.freq_a_hz if selected_vfo == "A" else self._state.freq_b_hz
 
 		if selected_vfo == "A":

@@ -84,14 +84,12 @@ const unsigned long FREQ_TX_IGNORE_MS = 1500;
 long rangeFromKHz = 5;   // Default: 5 kHz offset
 long rangeUpKHz   = 10;  // Default: 10 kHz offset
 
-// Clamp freq to the allowed range
-long clampFreqToRange(long baseFreq, long freq) {
-  long lower = baseFreq + rangeFromKHz * 1000L;
-  long upper = baseFreq + rangeUpKHz * 1000L;
-  if (freq < lower) return lower;
-  if (freq > upper) return upper;
-  return freq;
-}
+// ── Split range state ─────────────────────────────────────────────────────────
+// Populated when split activates; cleared when split turns off.
+bool  splitActive     = false;
+long  splitRangeLow   = 0;    // baseFreq + rangeFromKHz * 1000
+long  splitRangeHigh  = 0;    // baseFreq + rangeUpKHz  * 1000
+char  splitTargetVfo  = 'A';  // which VFO the knob was tuning during split
 
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
@@ -383,6 +381,12 @@ void handleCommand(const char *line) {
   // Freq values are gated (ignored while knob is active).
   // txVfo is always updated so split mode changes are instant.
   if (strncmp(line, "LCD_FREQ:", 9) == 0) {
+    // Save state before update so we can detect split transitions
+    long oldFreqA     = lcdFreqA;
+    long oldFreqB     = lcdFreqB;
+    char oldActiveVfo = lcdActiveVfo;
+    char oldTxVfo     = txVfo;
+
     char *p = (char *)line + 9;
     bool gateOpen = (millis() >= freqTxIgnoreUntilMs);
     long newA = atol(p);
@@ -405,6 +409,50 @@ void handleCommand(const char *line) {
         if (p) txVfo = *(++p);  // always update — no gate
       }
     }
+
+    // ── Split transition detection ──────────────────────────────────────────
+    bool wasSplit = (oldTxVfo != oldActiveVfo);
+    bool isSplit  = (txVfo != lcdActiveVfo);
+
+    if (!wasSplit && isSplit) {
+      // Split just turned ON — set the target VFO to baseFreq + FROM
+      long baseFreq = (oldActiveVfo == 'A') ? oldFreqA : oldFreqB;
+      if (baseFreq > 0) {
+        long rawLow    = baseFreq + rangeFromKHz * 1000L;
+        splitRangeLow  = ((rawLow + stepHz / 2) / stepHz) * stepHz; // snap to nearest step
+        splitRangeHigh = baseFreq + rangeUpKHz * 1000L;
+        splitActive    = true;
+        // Hunter: KNOB_TARGET_SW HIGH → tune TX; Fox: LOW → tune RX
+        bool isHunter  = (digitalRead(KNOB_TARGET_SW) == HIGH);
+        char targetVfo = isHunter ? txVfo : lcdActiveVfo;
+        splitTargetVfo = targetVfo;
+        ftdiSerial.print("SET_FREQ:");
+        ftdiSerial.print(splitRangeLow);
+        ftdiSerial.print(":");
+        ftdiSerial.println(targetVfo);
+        freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
+        // Update local LCD freq so display is consistent
+        if (targetVfo == 'A') { lcdFreqA = splitRangeLow; lastLcdFreqA = splitRangeLow; }
+        else                  { lcdFreqB = splitRangeLow; lastLcdFreqB = splitRangeLow; }
+      }
+    } else if (wasSplit && !isSplit) {
+      // Split turned OFF — snap tuned VFO to nearest step boundary
+      long curFreq = (splitTargetVfo == 'A') ? lcdFreqA : lcdFreqB;
+      if (curFreq > 0 && stepHz > 0) {
+        long snapped = ((curFreq + stepHz / 2) / stepHz) * stepHz;
+        ftdiSerial.print("SET_FREQ:");
+        ftdiSerial.print(snapped);
+        ftdiSerial.print(":");
+        ftdiSerial.println(splitTargetVfo);
+        freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
+        if (splitTargetVfo == 'A') { lcdFreqA = snapped; lastLcdFreqA = snapped; }
+        else                       { lcdFreqB = snapped; lastLcdFreqB = snapped; }
+      }
+      splitActive    = false;
+      splitRangeLow  = 0;
+      splitRangeHigh = 0;
+    }
+
     if (uiState != STATE_EDIT) {
       updateLcd();
     }
@@ -450,6 +498,11 @@ void pollFreqSend() {
 
   if (baseFreq > 0) {
     long newFreq = baseFreq + pk;
+    // Clamp to split range when active
+    if (splitActive && splitRangeLow > 0 && splitRangeHigh > 0) {
+      if (newFreq < splitRangeLow)  newFreq = splitRangeLow;
+      if (newFreq > splitRangeHigh) newFreq = splitRangeHigh;
+    }
     ftdiSerial.print("SET_FREQ:");
     ftdiSerial.print(newFreq);
     ftdiSerial.print(":");
