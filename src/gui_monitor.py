@@ -1,5 +1,5 @@
 class LogWindow:
-    def __init__(self, log_path: str, refresh_ms: int = 500, parent=None):
+    def __init__(self, log_path: str, refresh_ms: int = 500, parent=None, session_start: int = 0):
         self._root = tk.Toplevel(master=parent)
         self._root.withdraw()
         self._root.title("Log Window")
@@ -7,6 +7,7 @@ class LogWindow:
         self._refresh_ms = refresh_ms
         self._log_path = log_path
         self._window_state_path = Path(__file__).resolve().parents[1] / "log_window_state.json"
+        self._session_start = session_start
         self._text = tk.Text(self._root, wrap="none", font=("Consolas", 10), state="disabled", height=20)
         self._text.pack(fill="both", expand=True)
         self._last_size = 0
@@ -16,7 +17,6 @@ class LogWindow:
                 with open(self._window_state_path, "r", encoding="utf-8") as f:
                     state = json.load(f)
                     geom = state.get("geometry", "")
-                    print(f"[LogWindow] READ from file: {geom}")
                     m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geom or "")
                     if m:
                         width, height, x, y = map(int, m.groups())
@@ -24,19 +24,10 @@ class LogWindow:
                             x = max(0, x)
                             y = max(0, y)
                             self._root.update_idletasks()
-                            full_geom = f"{width}x{height}+{x}+{y}"
-                            print(f"[LogWindow] APPLY geometry: {full_geom}")
-                            self._root.geometry(full_geom)
-                        else:
-                            print(f"[LogWindow] SKIP restore: size too small ({width}x{height})")
-                    else:
-                        print(f"[LogWindow] SKIP restore: regex did not match")
-            else:
-                print(f"[LogWindow] No saved geometry file found")
-        except Exception as e:
-            print(f"[LogWindow] ERROR restoring geometry: {e}")
+                            self._root.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            pass
         self._root.deiconify()  # show window now that position is set
-        self._root.after(200, lambda: print(f"[LogWindow] geometry after 200ms: {self._root.geometry()}"))
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._load_full_log()
         self._refresh()
@@ -44,12 +35,10 @@ class LogWindow:
     def _save_geometry(self):
         try:
             geom = self._root.geometry()
-            print(f"[LogWindow] SAVE geometry: {geom}")
             with open(self._window_state_path, "w", encoding="utf-8") as f:
                 json.dump({"geometry": geom}, f)
-            print(f"[LogWindow] SAVED to file: {self._window_state_path}")
-        except Exception as e:
-            print(f"[LogWindow] ERROR saving geometry: {e}")
+        except Exception:
+            pass
 
     def _is_valid_geometry(self, geom: str) -> bool:
         # Accepts geometry like '320x290+100+100' or '320x290+0+0'
@@ -78,29 +67,21 @@ class LogWindow:
         self._refresh()
 
     def _load_full_log(self):
-        try:
-            with open(self._log_path, "r", encoding="utf-8") as f:
-                content = f.read()
-                if content:
-                    self._text.config(state="normal")
-                    self._text.insert("end", content)
-                    self._text.see("end")
-                    self._text.config(state="disabled")
-                self._last_size = f.tell()
-        except Exception:
-            pass
+        # Start from session_start — skip old data but show everything from this session
+        self._last_size = self._session_start
 
     def _refresh(self):
         try:
-            with open(self._log_path, "r", encoding="utf-8") as f:
+            with open(self._log_path, "rb") as f:
                 f.seek(self._last_size)
-                lines = f.read()
-                if lines:
-                    self._text.config(state="normal")
-                    self._text.insert("end", lines)
-                    self._text.see("end")
-                    self._text.config(state="disabled")
+                new_bytes = f.read()
                 self._last_size = f.tell()
+            if new_bytes:
+                lines = new_bytes.decode("utf-8", errors="replace")
+                self._text.config(state="normal")
+                self._text.insert("end", lines)
+                self._text.see("end")
+                self._text.config(state="disabled")
         except Exception:
             pass
         self._root.after(self._refresh_ms, self._refresh)
@@ -236,7 +217,7 @@ def _widget_bg(parent: tk.Widget) -> str:
 
 
 class RigMonitorWindow:
-    def __init__(self, rig: RigAdapter, refresh_ms: int = 200) -> None:
+    def __init__(self, rig: RigAdapter, refresh_ms: int = 200, log_path: str | None = None) -> None:
         # --- Create the root window first ---
         self._root = tk.Tk()
         self._root.title("vfoStepsKnob - Radio Monitor")
@@ -245,6 +226,18 @@ class RigMonitorWindow:
 
         # --- Now initialize all instance variables that depend on Tk ---
         self._rig = rig
+        self._log_path = log_path
+        self._log_last_values: tuple | None = None
+        self._log_compare_keys = ['freq_a', 'freq_b', 'split', 'vfo_route']
+        # Record file size before any writes this session, so the log window skips old data
+        self._log_session_start = 0
+        if log_path:
+            try:
+                with open(log_path, 'rb') as f:
+                    f.seek(0, 2)
+                    self._log_session_start = f.tell()
+            except Exception:
+                self._log_session_start = 0
         self._refresh_ms = max(100, refresh_ms)
         self._pending_freq_hz: int | None = None
         self._radio_type_var = tk.StringVar(value="-")
@@ -576,6 +569,34 @@ class RigMonitorWindow:
     def _refresh_loaded_models_label(self) -> None:
         models = self._rig.get_supported_radio_models()
         self._loaded_models_var.set(", ".join(models) if models else "(none listed in profile file)")
+
+    def _log_state(self, freq_a: int, freq_b: int, split, vfo_route) -> None:
+        if self._log_path is None:
+            return
+        state = {
+            'freq_a': freq_a,
+            'freq_b': freq_b,
+            'split': split,
+            'vfo_route': vfo_route,
+            'tx_vfo': self._rig.get_tx_vfo(),
+        }
+        current_values = tuple(state.get(k, '-') for k in self._log_compare_keys)
+        if self._log_last_values == current_values:
+            return
+        self._log_last_values = current_values
+        fields = [
+            f"freq_a={freq_a}",
+            f"freq_b={freq_b}",
+            f"split={split}",
+            f"vfo_route={vfo_route}",
+            f"tx_vfo={state['tx_vfo']}",
+        ]
+        line = ', '.join(fields)
+        try:
+            with open(self._log_path, 'a', encoding='utf-8') as f:
+                f.write(line + '\n')
+        except Exception:
+            pass
 
     def _browse_profile_file(self) -> None:
         current = Path(self._rig.get_profile_ini_path())
@@ -1049,6 +1070,7 @@ class RigMonitorWindow:
                             f"Display row {self._rig.get_knob_display_vfo()} / Command VFO {self._rig.get_knob_command_vfo()}"
                         )
                     self._split_var.set("YES" if split else "NO" if split is not None else "N/A")
+                    self._log_state(freq_a, freq_b, split, self._rig.get_vfo_route())
         except Exception as exc:
             self._set_omnirig_report("Not active", ok=False)
             self._set_knob_report("Not connected", ok=False)
