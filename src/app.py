@@ -132,7 +132,7 @@ def main() -> None:
                 # print(f"Could not open log window: {e}")
                 pass
         window._log_window = None
-        window._root.after(500, show_log_window)
+        # window._root.after(500, show_log_window)  # Log window hidden for now; keep code for future use
         window.run()
         import sys
         sys.exit(0)

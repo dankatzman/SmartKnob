@@ -102,7 +102,7 @@ def _dprint(msg: str) -> None:
     global _recent_printed
     if msg not in _recent_printed:
         _recent_printed = [_recent_printed[1], msg]
-        print(msg)
+        # print(msg)  # Console output disabled; uncomment to re-enable
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
