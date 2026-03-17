@@ -79,8 +79,13 @@ class RigState:
 	radio_type: str = "Unknown"
 
 
+
 class RigAdapter:
 	"""Small compatibility wrapper around omnipyrig with safe fallbacks."""
+
+	def refresh_backend(self):
+		"""Re-initialize the backend (OmniRig) after reconnect."""
+		self._try_init_backend()
 
 	def __init__(self, prefer_real_backend: bool = True, profile_ini_path: Optional[str] = None) -> None:
 		self._state = RigState()

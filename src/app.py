@@ -58,6 +58,9 @@ def _run_stdin_mode(processor: CommandProcessor) -> None:
 
 
 def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -> None:
+
+
+
     transport = SerialTransport()
     # print("Serial bridge mode. Waiting for Arduino... (Ctrl+C to stop)")
     last_wait_notice = 0.0
@@ -71,11 +74,11 @@ def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -
                     # print("Searching for Arduino serial port...")
                     last_wait_notice = now
 
+
                 try:
                     chosen = transport.auto_connect(baudrate=baud, port_hint=port)
                     # print(f"Serial connected: {chosen} @ {baud}")
                     # print("Bridge running.")
-                    # Optional handshake for Arduino sketches that implement HELLO.
                     try:
                         transport.write_line("HELLO")
                     except Exception:
@@ -89,7 +92,6 @@ def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -
                 if line is None:
                     continue
 
-                # DEBUG line
                 debug_line = f"DEBUG: Received line from Arduino: {line}"
                 if debug_line != last_values["DEBUG"]:
                     # print(debug_line)
@@ -98,8 +100,6 @@ def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -
                 response = processor.handle(line)
                 transport.write_line(response)
 
-                rx_line = f"RX: {line}"
-                tx_line = f"TX: {response}"
                 combined_line = f"RX: {line} | TX: {response}"
                 if combined_line != last_values["RX"]:
                     # print(combined_line)
@@ -108,6 +108,8 @@ def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -
                 # print(f"Serial link lost ({exc}). Reconnecting...")
                 transport.close()
                 time.sleep(0.8)
+                # Reinitialize SerialTransport to ensure fresh scan after disconnect
+                transport = SerialTransport()
     finally:
         transport.close()
 

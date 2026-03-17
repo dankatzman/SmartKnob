@@ -738,6 +738,12 @@ class RigMonitorWindow:
             self._set_knob_report("Knob not found", ok=False)
 
     def _refresh_knob_connection_status(self) -> None:
+        # Always update the knob status label to reflect the current connection state
+        if self._transport is not None and self._transport.is_connected:
+            self._set_knob_report("Knob: Connected", ok=True)
+        else:
+            self._set_knob_report("Knob: Not connected", ok=False)
+
         if time.monotonic() < self._knob_status_until:
             return
 
@@ -990,8 +996,14 @@ class RigMonitorWindow:
         pass
 
     def _refresh(self) -> None:
+        # Check OmniRig status independently
         try:
             omnirig_running = self._rig.is_omnirig_running()
+        except Exception:
+            omnirig_running = False
+
+        # Check Arduino/knob connection independently
+        try:
             self._refresh_knob_connection_status()
             # Send both VFO frequencies and txVfo to Arduino every cycle
             if self._transport is not None and self._transport.is_connected:
@@ -1001,113 +1013,106 @@ class RigMonitorWindow:
                 tx_vfo = self._rig.get_tx_vfo()
                 if freq_a and freq_b:
                     self._transport.write_line(f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}:{tx_vfo}")
+        except Exception:
+            pass
+
+        # Always update profile/model/debug info
+        try:
             self._refresh_profile_file_label()
             self._refresh_loaded_models_label()
             debug = self._rig.get_debug_snapshot()
             self._debug_var.set(
                 f"Debug: backend={debug['backend']} status={debug['status']} vfo={debug['vfo']} route={debug['vfo_route']} freqCur={debug['freq_current']} freqRaw={debug['freq_raw']} knobRow={debug['knob_display_vfo']} knobCmd={debug['knob_command_vfo']} split={debug['split']}"
             )
+        except Exception:
+            pass
 
-            if not omnirig_running:
-                self._omnirig_fail_count += 1
-                if self._omnirig_fail_count >= self._omnirig_fail_threshold:
-                    if self._last_omnirig_report != "Not active":
-                        self._set_omnirig_report("Not active", ok=False)
-                        self._last_omnirig_report = "Not active"
-                self._freq_fail_count += 1
-                if self._freq_fail_count >= self._freq_fail_threshold:
-                    self._set_na_values()
-                self._apply_split_visual_effect(None)
-            elif self._rig.backend_name == "mock":
-                self._omnirig_fail_count += 1
-                if self._omnirig_fail_count >= self._omnirig_fail_threshold:
-                    if self._last_omnirig_report != "Not active":
-                        self._set_omnirig_report("Not active", ok=False)
-                        self._last_omnirig_report = "Not active"
-                self._freq_fail_count += 1
-                if self._freq_fail_count >= self._freq_fail_threshold:
-                    self._set_na_values()
-                self._apply_split_visual_effect(None)
-            else:
-                freq_a = self._rig.read_frequency("A")
-                freq_b = self._rig.read_frequency("B")
-                freq_current = self._rig.read_current_frequency()
+        # Improved OmniRig status logic: only show 'Active' if OmniRig is running AND valid frequency data is received
+        freq_a = self._rig.read_frequency("A") if omnirig_running else None
+        freq_b = self._rig.read_frequency("B") if omnirig_running else None
+        freq_current = self._rig.read_current_frequency() if omnirig_running else None
+        split = self._rig.read_split_mode() if omnirig_running else None
+        self._refresh_row_labels(split)
+        self._apply_split_visual_effect(split)
+
+        if not omnirig_running or freq_a is None or freq_b is None:
+            self._omnirig_fail_count += 1
+            if self._omnirig_fail_count >= self._omnirig_fail_threshold:
+                if self._last_omnirig_report != "Not active":
+                    self._set_omnirig_report("Not active", ok=False)
+                    self._last_omnirig_report = "Not active"
+            self._freq_fail_count += 1
+            if self._freq_fail_count >= self._freq_fail_threshold:
+                self._set_na_values()
+        else:
+            # Success: update fail counters and GUI
+            self._freq_fail_count = 0  # Reset fail counter on success
+            self._omnirig_fail_count = 0  # Reset omnirig fail counter on success
+            self._update_active_vfo_display("A")
+            if self._last_omnirig_report != "Active":
+                self._set_omnirig_report("Active", ok=True)
+                self._last_omnirig_report = "Active"
+            self._radio_type_var.set(self._rig.get_radio_type())
+
+            # Handle pending frequency confirmation
+            if self._pending_freq_hz is not None and freq_current == self._pending_freq_hz:
+                # Radio confirmed the pending value; clear pending
+                self._pending_freq_hz = None
+                self._pending_freq_vfo = None
+
+            if self._pending_freq_hz is not None:
+                # Still waiting for radio confirmation; keep showing pending value
+                self._current_freq_var.set(_fmt_hz(self._pending_freq_hz))
                 split = self._rig.read_split_mode()
-                self._refresh_row_labels(split)
-                self._apply_split_visual_effect(split)
-
-                if freq_a is None or freq_b is None:
-                    self._omnirig_fail_count += 1
-                    if self._omnirig_fail_count >= self._omnirig_fail_threshold:
-                        if self._last_omnirig_report != "Not active":
-                            self._set_omnirig_report("Not active", ok=False)
-                            self._last_omnirig_report = "Not active"
-                    self._freq_fail_count += 1
-                    if self._freq_fail_count >= self._freq_fail_threshold:
-                        self._set_na_values()
+                if split:
+                    tx_vfo = self._rig.get_tx_vfo()
+                    if tx_vfo == "A":
+                        self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
+                        self._vfo_b_var.set(_fmt_hz(freq_b))  # Always update RX from radio
+                    elif tx_vfo == "B":
+                        self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
+                        self._vfo_a_var.set(_fmt_hz(freq_a))  # Always update RX from radio
                 else:
-                    self._freq_fail_count = 0  # Reset fail counter on success
-                    self._omnirig_fail_count = 0  # Reset omnirig fail counter on success
-                    self._update_active_vfo_display("A")
-                    if self._last_omnirig_report != "Active":
-                        self._set_omnirig_report("Active", ok=True)
-                        self._last_omnirig_report = "Active"
-                    self._radio_type_var.set(self._rig.get_radio_type())
-                    # Only overwrite the GUI display if the radio disagrees with the pending Arduino value
-                    if self._pending_freq_hz is not None and freq_current == self._pending_freq_hz:
-                        # Radio confirmed the pending value; clear pending
-                        self._pending_freq_hz = None
-                        self._pending_freq_vfo = None
-                    if self._pending_freq_hz is not None:
-                        # Still waiting for radio confirmation; keep showing pending value
-                        self._current_freq_var.set(_fmt_hz(self._pending_freq_hz))
-                        split = self._rig.read_split_mode()
-                        if split:
-                            tx_vfo = self._rig.get_tx_vfo()
-                            if tx_vfo == "A":
-                                self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
-                                self._vfo_b_var.set(_fmt_hz(freq_b))  # Always update RX from radio
-                            elif tx_vfo == "B":
-                                self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
-                                self._vfo_a_var.set(_fmt_hz(freq_a))  # Always update RX from radio
-                        else:
-                            # Not split: update both fields as usual
-                            if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
-                                self._vfo_a_var.set(_fmt_hz(freq_b))
-                                self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
-                            else:
-                                self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
-                                self._vfo_b_var.set(_fmt_hz(freq_b))
+                    # Not split: update both fields as usual
+                    if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
+                        self._vfo_a_var.set(_fmt_hz(freq_b))
+                        self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
                     else:
-                        self._current_freq_var.set(_fmt_hz(freq_current) if freq_current is not None else "N/A")
-                        split = self._rig.read_split_mode()
-                        if split:
-                            tx_vfo = self._rig.get_tx_vfo()
-                            # Always update RX field from radio in split mode
-                            if tx_vfo == "A":
-                                self._vfo_a_var.set(_fmt_hz(freq_a))
-                                self._vfo_b_var.set(_fmt_hz(freq_b))
-                            elif tx_vfo == "B":
-                                self._vfo_a_var.set(_fmt_hz(freq_a))
-                                self._vfo_b_var.set(_fmt_hz(freq_b))
-                        else:
-                            if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
-                                self._vfo_a_var.set(_fmt_hz(freq_b))
-                                self._vfo_b_var.set(_fmt_hz(freq_a))
-                            else:
-                                self._vfo_a_var.set(_fmt_hz(freq_a))
-                                self._vfo_b_var.set(_fmt_hz(freq_b))
-                    self._vfo_route_var.set(self._rig.get_vfo_route() or "N/A")
-                    if self._rig.uses_display_slot_mode():
-                        self._knob_target_var.set(
-                            f"Row 1 is the knob-frequency slot; command uses slot {self._rig.get_knob_command_vfo()}; physical VFO A/B is not exposed"
-                        )
+                        self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
+                        self._vfo_b_var.set(_fmt_hz(freq_b))
+            else:
+                # No pending freq: update display with current radio values
+                self._current_freq_var.set(_fmt_hz(freq_current) if freq_current is not None else "N/A")
+                split = self._rig.read_split_mode()
+                if split:
+                    tx_vfo = self._rig.get_tx_vfo()
+                    # Always update RX field from radio in split mode
+                    if tx_vfo == "A":
+                        self._vfo_a_var.set(_fmt_hz(freq_a))
+                        self._vfo_b_var.set(_fmt_hz(freq_b))
+                    elif tx_vfo == "B":
+                        self._vfo_a_var.set(_fmt_hz(freq_a))
+                        self._vfo_b_var.set(_fmt_hz(freq_b))
+                else:
+                    if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
+                        self._vfo_a_var.set(_fmt_hz(freq_b))
+                        self._vfo_b_var.set(_fmt_hz(freq_a))
                     else:
-                        self._knob_target_var.set(
-                            f"Display row {self._rig.get_knob_display_vfo()} / Command VFO {self._rig.get_knob_command_vfo()}"
-                        )
-                    self._split_var.set("YES" if split else "NO" if split is not None else "N/A")
-                    self._log_state(freq_a, freq_b, split, self._rig.get_vfo_route())
+                        self._vfo_a_var.set(_fmt_hz(freq_a))
+                        self._vfo_b_var.set(_fmt_hz(freq_b))
+
+        try:
+            self._vfo_route_var.set(self._rig.get_vfo_route() or "N/A")
+            if self._rig.uses_display_slot_mode():
+                self._knob_target_var.set(
+                    f"Row 1 is the knob-frequency slot; command uses slot {self._rig.get_knob_command_vfo()}; physical VFO A/B is not exposed"
+                )
+            else:
+                self._knob_target_var.set(
+                    f"Display row {self._rig.get_knob_display_vfo()} / Command VFO {self._rig.get_knob_command_vfo()}"
+                )
+            self._split_var.set("YES" if split else "NO" if split is not None else "N/A")
+            self._log_state(freq_a, freq_b, split, self._rig.get_vfo_route())
         except Exception as exc:
             self._set_omnirig_report("Not active", ok=False)
             self._set_knob_report("Not connected", ok=False)
