@@ -20,3 +20,297 @@ freq_a=14192310, freq_b=7201000, split=False, vfo_route=None, tx_vfo=A, time=202
 freq_a=14192310, freq_b=7199000, split=False, vfo_route=None, tx_vfo=A, time=2026-03-17T13:13:19.446833
 freq_a=14192310, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A, time=2026-03-17T13:13:19.966716
 freq_a=14192310, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14192310, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14192310, freq_b=7198000, split=True, vfo_route=None, tx_vfo=B
+freq_a=14197000, freq_b=7198000, split=True, vfo_route=None, tx_vfo=B
+freq_a=14197000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14197000, freq_b=7198000, split=True, vfo_route=None, tx_vfo=B
+freq_a=14202000, freq_b=7198000, split=True, vfo_route=None, tx_vfo=B
+freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14198000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14200000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14198000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14198000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1, freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14212000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14218000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14212000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+11) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+12) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+13) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+14) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+15) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+16) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+17) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+18) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+19) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+20) freq_a=14199000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+21) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+22) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+23) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+24) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+25) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+26) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+27) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+11) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+12) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+13) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+14) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+15) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+16) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+17) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+18) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+19) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+20) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+21) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+22) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+23) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+24) freq_a=14212000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+25) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+26) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+27) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+28) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+29) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+30) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+31) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+32) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+33) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+34) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+35) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+36) freq_a=14218000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+37) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+38) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+39) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+40) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+41) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+42) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+43) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+44) freq_a=14212000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+45) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+46) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+47) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+48) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+49) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+50) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+51) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+52) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+53) freq_a=14212000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+54) freq_a=14213000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+55) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+56) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+57) freq_a=14215000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+58) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+59) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+60) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14218000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14217000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14216000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14214000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14212000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+11) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+12) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14211000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14210000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14209000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14200000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+11) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+12) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+13) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+14) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+15) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+16) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+17) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+18) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+19) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14207000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14204860, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14204430, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14204120, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14204320, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14204320, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14208000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14200000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14201000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14204500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14205500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14205000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+11) freq_a=14204500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14204500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14202000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+3) freq_a=14202500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+4) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+5) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+6) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+7) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+8) freq_a=14203000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+9) freq_a=14203500, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
+10) freq_a=14204000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A

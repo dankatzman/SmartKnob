@@ -390,6 +390,12 @@ void handleCommand(const char *line) {
     char *p = (char *)line + 9;
     bool gateOpen = (millis() >= freqTxIgnoreUntilMs);
     long newA = atol(p);
+    Serial.print("DBG LCD_FREQ: newA="); Serial.print(newA);
+    Serial.print(" gateOpen="); Serial.print(gateOpen ? "Y" : "N");
+    Serial.print(" lcdFreqA_before="); Serial.println(lcdFreqA);
+    ftdiSerial.print("DBG:LCD_FREQ newA="); ftdiSerial.print(newA);
+    ftdiSerial.print(" gate="); ftdiSerial.print(gateOpen ? "Y" : "N");
+    ftdiSerial.print(" lcdFreqA_was="); ftdiSerial.println(lcdFreqA);
     if (gateOpen && newA > 0) {
       if (lcdFreqA != newA) snapPendingA = true;
       lcdFreqA = newA;
@@ -503,6 +509,12 @@ void pollFreqSend() {
       if (newFreq < splitRangeLow)  newFreq = splitRangeLow;
       if (newFreq > splitRangeHigh) newFreq = splitRangeHigh;
     }
+    Serial.print("DBG pollFreqSend: baseFreq="); Serial.print(baseFreq);
+    Serial.print(" pk="); Serial.print(pk);
+    Serial.print(" newFreq="); Serial.println(newFreq);
+    ftdiSerial.print("DBG:baseFreq="); ftdiSerial.print(baseFreq);
+    ftdiSerial.print(" pk="); ftdiSerial.print(pk);
+    ftdiSerial.print(" newFreq="); ftdiSerial.println(newFreq);
     ftdiSerial.print("SET_FREQ:");
     ftdiSerial.print(newFreq);
     ftdiSerial.print(":");
@@ -519,6 +531,8 @@ void pollFreqSend() {
       writeFreqField(0, newFreq);
     }
   } else {
+    Serial.println("DBG pollFreqSend: NO_BASE_FREQ (baseFreq=0)");
+    ftdiSerial.println("DBG:NO_BASE_FREQ baseFreq=0");
     ftdiSerial.println("NO_BASE_FREQ");
   }
 

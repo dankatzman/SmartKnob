@@ -41,35 +41,40 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run_stdin_mode(processor: CommandProcessor) -> None:
-    print("stdin mode ready. Type protocol commands (Ctrl+C to exit).")
+    # print("stdin mode ready. Type protocol commands (Ctrl+C to exit).")
+    last_value = None
     while True:
         try:
             line = input("> ").strip()
         except EOFError:
-            print("stdin closed.")
+            # print("stdin closed.")
             return
         if not line:
             continue
-        print(processor.handle(line))
+        value = processor.handle(line)
+        if value != last_value:
+            # print(value)
+            last_value = value
 
 
 def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -> None:
     transport = SerialTransport()
-    print("Serial bridge mode. Waiting for Arduino... (Ctrl+C to stop)")
+    # print("Serial bridge mode. Waiting for Arduino... (Ctrl+C to stop)")
     last_wait_notice = 0.0
+    last_values = {"DEBUG": None, "RX": None, "TX": None}
 
     try:
         while True:
             if not transport.is_connected:
                 now = time.monotonic()
                 if now - last_wait_notice >= 3.0:
-                    print("Searching for Arduino serial port...")
+                    # print("Searching for Arduino serial port...")
                     last_wait_notice = now
 
                 try:
                     chosen = transport.auto_connect(baudrate=baud, port_hint=port)
-                    print(f"Serial connected: {chosen} @ {baud}")
-                    print("Bridge running.")
+                    # print(f"Serial connected: {chosen} @ {baud}")
+                    # print("Bridge running.")
                     # Optional handshake for Arduino sketches that implement HELLO.
                     try:
                         transport.write_line("HELLO")
@@ -84,12 +89,23 @@ def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -
                 if line is None:
                     continue
 
-                print(f"DEBUG: Received line from Arduino: {line}")
+                # DEBUG line
+                debug_line = f"DEBUG: Received line from Arduino: {line}"
+                if debug_line != last_values["DEBUG"]:
+                    # print(debug_line)
+                    last_values["DEBUG"] = debug_line
+
                 response = processor.handle(line)
                 transport.write_line(response)
-                print(f"RX: {line} | TX: {response}")
+
+                rx_line = f"RX: {line}"
+                tx_line = f"TX: {response}"
+                combined_line = f"RX: {line} | TX: {response}"
+                if combined_line != last_values["RX"]:
+                    # print(combined_line)
+                    last_values["RX"] = combined_line
             except Exception as exc:
-                print(f"Serial link lost ({exc}). Reconnecting...")
+                # print(f"Serial link lost ({exc}). Reconnecting...")
                 transport.close()
                 time.sleep(0.8)
     finally:
@@ -99,7 +115,7 @@ def _run_serial_mode(processor: CommandProcessor, port: str | None, baud: int) -
 def main() -> None:
     args = _build_parser().parse_args()
     rig = RigAdapter(prefer_real_backend=not args.mock)
-    print(f"Rig backend: {rig.backend_name}")
+    # print(f"Rig backend: {rig.backend_name}")
     if args.stdin:
         processor = CommandProcessor(rig)
         _run_stdin_mode(processor)
@@ -111,9 +127,10 @@ def main() -> None:
         window = RigMonitorWindow(rig=rig, refresh_ms=150, log_path=log_path)
         def show_log_window():
             try:
-                window._log_window = LogWindow(log_path, parent=window._root, session_start=window._log_session_start)
+                window._log_window = LogWindow(log_path, refresh_ms=200, parent=window._root, session_start=window._log_session_start)
             except Exception as e:
-                print(f"Could not open log window: {e}")
+                # print(f"Could not open log window: {e}")
+                pass
         window._log_window = None
         window._root.after(500, show_log_window)
         window.run()

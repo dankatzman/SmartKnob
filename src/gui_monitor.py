@@ -94,6 +94,15 @@ import json
 import re
 import threading
 import time
+
+_recent_printed: list = ["", ""]
+
+def _dprint(msg: str) -> None:
+    """Print only if message was not one of the last 2 printed lines."""
+    global _recent_printed
+    if msg not in _recent_printed:
+        _recent_printed = [_recent_printed[1], msg]
+        print(msg)
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -229,6 +238,7 @@ class RigMonitorWindow:
         self._log_path = log_path
         self._log_last_values: tuple | None = None
         self._log_compare_keys = ['freq_a', 'freq_b', 'split', 'vfo_route']
+        self._log_counter = 0
         # Record file size before any writes this session, so the log window skips old data
         self._log_session_start = 0
         if log_path:
@@ -240,6 +250,9 @@ class RigMonitorWindow:
                 self._log_session_start = 0
         self._refresh_ms = max(100, refresh_ms)
         self._pending_freq_hz: int | None = None
+        self._pending_freq_vfo: str | None = None
+        self._knob_discard_until: float = 0.0
+        self._set_freq_gen: int = 0
         self._radio_type_var = tk.StringVar(value="-")
         self._profile_file_var = tk.StringVar(value="-")
         self._loaded_models_var = tk.StringVar(value="-")
@@ -584,6 +597,7 @@ class RigMonitorWindow:
         if self._log_last_values == current_values:
             return
         self._log_last_values = current_values
+        self._log_counter += 1
         fields = [
             f"freq_a={freq_a}",
             f"freq_b={freq_b}",
@@ -591,7 +605,7 @@ class RigMonitorWindow:
             f"vfo_route={vfo_route}",
             f"tx_vfo={state['tx_vfo']}",
         ]
-        line = ', '.join(fields)
+        line = f"{self._log_counter}) " + ', '.join(fields)
         try:
             with open(self._log_path, 'a', encoding='utf-8') as f:
                 f.write(line + '\n')
@@ -668,7 +682,6 @@ class RigMonitorWindow:
             t = SerialTransport()
             t.open(port, baudrate=_KNOB_BAUD)
             self._transport = t
-            # Give the Arduino time to boot after the DTR reset triggered by open().
             self._last_freq_send = time.monotonic()
             self._start_knob_reader()
         except Exception:
@@ -687,10 +700,14 @@ class RigMonitorWindow:
                     break
                 if line is None:
                     continue
+                if not line.startswith("HELLO_ARDUINO"):
+                    _dprint(f"[reader] received: {repr(line)}")
                 if line.startswith("SET_FREQ:"):
                     payload = line[9:]
+                    _dprint(f"[reader] dispatching SET_FREQ: {payload}")
                     self._root.after(0, lambda p=payload: self._on_set_freq(p))
                 elif line == "NO_BASE_FREQ":
+                    _dprint(f"[reader] NO_BASE_FREQ — Arduino has no base frequency yet")
                     self._root.after(0, self._on_no_base_freq)
                 elif line == "BTN:PRESS":
                     self._root.after(0, self._on_knob_button_press)
@@ -935,13 +952,32 @@ class RigMonitorWindow:
             elif vfo == "B":
                 self._vfo_b_var.set(_fmt_hz(hz))
             self._pending_freq_hz = hz
+            self._pending_freq_vfo = vfo
             self._current_freq_var.set(_fmt_hz(hz))
+            self._set_freq_gen += 1
+            gen = self._set_freq_gen
+            _dprint(f"[_on_set_freq] calling set_frequency({hz}, {vfo}) gen={gen}")
             self._rig.set_frequency(hz, vfo)
+            self._root.after(600, lambda h=hz, v=vfo, g=gen: self._retry_set_freq(h, v, g, attempt=1))
             self._set_knob_report("Knob active", ok=True)
             self._knob_status_until = time.monotonic() + 2.0
         except Exception as exc:
             self._set_knob_report(f"Set freq error: {exc}", ok=False)
             self._knob_status_until = time.monotonic() + 4.0
+
+    def _retry_set_freq(self, hz: int, vfo: str, gen: int, attempt: int = 1) -> None:
+        """Retry set_frequency — OmniRig may be in 'not responding' state on first call."""
+        if self._set_freq_gen != gen:
+            return  # User has already sent a newer command, don't override
+        status = self._rig.get_raw_param("Status")
+        freq_a = self._rig.get_raw_param("FreqA")
+        _dprint(f"[_retry_set_freq] omnirig_status={status} omnirig_freqA={freq_a} target={hz} gen={gen}")
+        try:
+            self._rig.set_frequency(hz, vfo)
+        except Exception as exc:
+            print(f"[_retry_set_freq] exception: {exc}")
+        if attempt < 20:  # keep retrying every 500ms for up to 10 seconds
+            self._root.after(500, lambda h=hz, v=vfo, g=gen, a=attempt+1: self._retry_set_freq(h, v, g, a))
 
     def _on_no_base_freq(self) -> None:
         """Called when the Arduino reports it has no base frequency yet."""
@@ -1021,6 +1057,7 @@ class RigMonitorWindow:
                     if self._pending_freq_hz is not None and freq_current == self._pending_freq_hz:
                         # Radio confirmed the pending value; clear pending
                         self._pending_freq_hz = None
+                        self._pending_freq_vfo = None
                     if self._pending_freq_hz is not None:
                         # Still waiting for radio confirmation; keep showing pending value
                         self._current_freq_var.set(_fmt_hz(self._pending_freq_hz))

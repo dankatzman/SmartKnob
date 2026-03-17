@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"/c/Users/user/.platformio/penv/Scripts/platformio\" pkg:*)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(k,v.get\\(''''version'''',''''?''''\\)\\) for k,v in d.get\\(''''packages'''',{}\\).items\\(\\)]\")",
+      "Bash(\"/c/Users/user/.platformio/penv/Scripts/platformio\" run:*)",
+      "Bash(rm -rf \"/c/Users/user/.platformio/packages/toolchain-atmelavr\")"
+    ]
+  }
+}

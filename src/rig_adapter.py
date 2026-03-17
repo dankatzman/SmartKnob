@@ -136,7 +136,7 @@ class RigAdapter:
 		try:
 			import omnipyrig  # type: ignore
 		except Exception as exc:
-			print(f"[RigAdapter] Could not import omnipyrig: {exc}")
+			# print(f"[RigAdapter] Could not import omnipyrig: {exc}")
 			return
 
 		candidates: list[Any] = []
@@ -149,7 +149,8 @@ class RigAdapter:
 					set_active(1)
 				candidates.append(wrapper)
 			except Exception as exc:
-				print(f"[RigAdapter] OmniRigWrapper failed: {exc}")
+				# print(f"[RigAdapter] OmniRigWrapper failed: {exc}")
+				pass
 
 		for symbol in ("OmniRigX", "OmniRig"):
 			ctor = getattr(omnipyrig, symbol, None)
@@ -157,14 +158,16 @@ class RigAdapter:
 				try:
 					candidates.append(ctor())
 				except Exception as exc:
-					print(f"[RigAdapter] {symbol} failed: {exc}")
+					# print(f"[RigAdapter] {symbol} failed: {exc}")
+					pass
 
 		getter = getattr(omnipyrig, "get_omnirig", None)
 		if callable(getter):
 			try:
 				candidates.append(getter())
 			except Exception as exc:
-				print(f"[RigAdapter] get_omnirig failed: {exc}")
+				# print(f"[RigAdapter] get_omnirig failed: {exc}")
+				pass
 
 		for backend in candidates:
 			if backend is not None:
@@ -177,9 +180,9 @@ class RigAdapter:
 					self._state.radio_type = name.strip()
 				else:
 					self._state.radio_type = self._backend_name
-				print(f"[RigAdapter] OmniRig backend loaded: {self._backend_name}")
+				# print(f"[RigAdapter] OmniRig backend loaded: {self._backend_name}")
 				return
-		print("[RigAdapter] No OmniRig backend loaded, using mock.")
+		# print("[RigAdapter] No OmniRig backend loaded, using mock.")
 
 	def _is_wrapper_backend(self) -> bool:
 		return self._backend is not None and hasattr(self._backend, "getParam")
@@ -215,24 +218,20 @@ class RigAdapter:
 		return None
 
 	def get_debug_snapshot(self) -> dict[str, Any]:
+		# Always provide real values, fallback to self._state if backend is not available
 		snapshot: dict[str, Any] = {
 			"backend": self._backend_name,
-			"vfo": None,
-			"vfo_route": None,
-			"freq_current": None,
-			"freq_raw": None,
+			"vfo": getattr(self._state, "active_vfo", None),
+			"vfo_route": self.get_vfo_route(),
+			"freq_current": self.read_current_frequency(),
+			"freq_raw": self.read_omnirig_raw_frequency(),
+			"freq_a": self.read_frequency("A"),
+			"freq_b": self.read_frequency("B"),
 			"knob_display_vfo": self.get_knob_display_vfo(),
 			"knob_command_vfo": self.get_knob_command_vfo(),
-			"split": None,
-			"status": None,
+			"split": self.read_split_mode(),
+			"status": self._get_param("Status") if self._is_wrapper_backend() else None,
 		}
-		if self._is_wrapper_backend():
-			snapshot["vfo"] = self._get_param("Vfo")
-			snapshot["vfo_route"] = self.get_vfo_route()
-			snapshot["freq_current"] = self.read_current_frequency()
-			snapshot["freq_raw"] = self.read_omnirig_raw_frequency()
-			snapshot["split"] = self._get_param("Split")
-			snapshot["status"] = self._get_param("Status")
 		return snapshot
 
 	@staticmethod
