@@ -1,3 +1,114 @@
+class LogWindow:
+    def __init__(self, log_path: str, refresh_ms: int = 500, parent=None):
+        self._root = tk.Toplevel(master=parent)
+        self._root.withdraw()
+        self._root.title("Log Window")
+        self._root.minsize(320, 180)
+        self._refresh_ms = refresh_ms
+        self._log_path = log_path
+        self._window_state_path = Path(__file__).resolve().parents[1] / "log_window_state.json"
+        self._text = tk.Text(self._root, wrap="none", font=("Consolas", 10), state="disabled", height=20)
+        self._text.pack(fill="both", expand=True)
+        self._last_size = 0
+        # Restore window geometry if available and valid
+        try:
+            if self._window_state_path.exists():
+                with open(self._window_state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                    geom = state.get("geometry", "")
+                    print(f"[LogWindow] READ from file: {geom}")
+                    m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geom or "")
+                    if m:
+                        width, height, x, y = map(int, m.groups())
+                        if width >= 100 and height >= 100:
+                            x = max(0, x)
+                            y = max(0, y)
+                            self._root.update_idletasks()
+                            full_geom = f"{width}x{height}+{x}+{y}"
+                            print(f"[LogWindow] APPLY geometry: {full_geom}")
+                            self._root.geometry(full_geom)
+                        else:
+                            print(f"[LogWindow] SKIP restore: size too small ({width}x{height})")
+                    else:
+                        print(f"[LogWindow] SKIP restore: regex did not match")
+            else:
+                print(f"[LogWindow] No saved geometry file found")
+        except Exception as e:
+            print(f"[LogWindow] ERROR restoring geometry: {e}")
+        self._root.deiconify()  # show window now that position is set
+        self._root.after(200, lambda: print(f"[LogWindow] geometry after 200ms: {self._root.geometry()}"))
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._load_full_log()
+        self._refresh()
+
+    def _save_geometry(self):
+        try:
+            geom = self._root.geometry()
+            print(f"[LogWindow] SAVE geometry: {geom}")
+            with open(self._window_state_path, "w", encoding="utf-8") as f:
+                json.dump({"geometry": geom}, f)
+            print(f"[LogWindow] SAVED to file: {self._window_state_path}")
+        except Exception as e:
+            print(f"[LogWindow] ERROR saving geometry: {e}")
+
+    def _is_valid_geometry(self, geom: str) -> bool:
+        # Accepts geometry like '320x290+100+100' or '320x290+0+0'
+        import re
+        m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geom)
+        if not m:
+            return False
+        width, height, x, y = map(int, m.groups())
+        # Consider negative or very large values as invalid
+        if width < 100 or height < 100:
+            return False
+        if x < -50 or y < -50:
+            return False
+        # Optionally, check against screen size
+        try:
+            self._root.update_idletasks()
+            screen_w = self._root.winfo_screenwidth()
+            screen_h = self._root.winfo_screenheight()
+            if x > screen_w - 50 or y > screen_h - 50:
+                return False
+        except Exception:
+            pass
+        return True
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._load_full_log()
+        self._refresh()
+
+    def _load_full_log(self):
+        try:
+            with open(self._log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                if content:
+                    self._text.config(state="normal")
+                    self._text.insert("end", content)
+                    self._text.see("end")
+                    self._text.config(state="disabled")
+                self._last_size = f.tell()
+        except Exception:
+            pass
+
+    def _refresh(self):
+        try:
+            with open(self._log_path, "r", encoding="utf-8") as f:
+                f.seek(self._last_size)
+                lines = f.read()
+                if lines:
+                    self._text.config(state="normal")
+                    self._text.insert("end", lines)
+                    self._text.see("end")
+                    self._text.config(state="disabled")
+                self._last_size = f.tell()
+        except Exception:
+            pass
+        self._root.after(self._refresh_ms, self._refresh)
+
+    def _on_close(self):
+        self._save_geometry()
+        self._root.destroy()
+
 import json
 import re
 import threading
@@ -205,7 +316,7 @@ class RigMonitorWindow:
         ]
 
         # Restore window geometry if available
-        self._window_state_path = Path(__file__).resolve().parents[1] / "log_window_state.json"
+        self._window_state_path = Path(__file__).resolve().parents[1] / "main_window_state.json"
         try:
             if self._window_state_path.exists():
                 with open(self._window_state_path, "r", encoding="utf-8") as f:
@@ -222,86 +333,18 @@ class RigMonitorWindow:
         # Build the GUI layout
         self._build_layout()
     def _on_close(self):
+        # Save log window position before any destruction
+        lw = getattr(self, "_log_window", None)
+        if lw is not None:
+            lw._save_geometry()
         try:
             geom = self._root.geometry()
-            state = {"geometry": geom}
             with open(self._window_state_path, "w", encoding="utf-8") as f:
-                json.dump(state, f)
+                json.dump({"geometry": geom}, f)
         except Exception:
             pass
+        self._root.quit()
         self._root.destroy()
-
-        self._radio_type_var = tk.StringVar(value="-")
-        self._profile_file_var = tk.StringVar(value="-")
-        self._loaded_models_var = tk.StringVar(value="-")
-        self._vfo_a_name_var = tk.StringVar(value="VFO A")
-        self._vfo_b_name_var = tk.StringVar(value="VFO B")
-        self._vfo_a_var = tk.StringVar(value="-")
-        self._vfo_b_var = tk.StringVar(value="-")
-        self._current_freq_var = tk.StringVar(value="-")
-        self._vfo_route_var = tk.StringVar(value="-")
-        self._knob_target_var = tk.StringVar(value="-")
-        self._split_var = tk.StringVar(value="-")
-        self._omnirig_report_var = tk.StringVar(value="OmniRig: Checking...")
-        self._knob_report_var = tk.StringVar(value="Knob: Not connected")
-        self._debug_var = tk.StringVar(value="Debug: -")
-        self._radio_type_name_label: tk.Label | None = None
-        self._radio_type_value_label: tk.Label | None = None
-        self._vfo_a_name_label: tk.Label | None = None
-        self._vfo_a_value_label: tk.Label | None = None
-        self._vfo_a_name_container: tk.Frame | None = None
-        self._vfo_b_name_label: tk.Label | None = None
-        self._vfo_b_value_label: tk.Label | None = None
-        self._vfo_b_name_container: tk.Frame | None = None
-        self._omnirig_report_label: tk.Label | None = None
-        self._knob_report_label: tk.Label | None = None
-        self._knob_status_until: float = 0.0
-        self._last_knob_probe: float = 0.0
-        self._last_knob_port: str | None = None
-        self._probe_running: bool = False
-        self._transport: SerialTransport | None = None
-        self._last_freq_send: float = 0.0
-        self._freq_send_interval: float = 1.0
-        # Debounce variables for N/A flicker
-        self._freq_fail_count: int = 0
-        self._freq_fail_threshold: int = 3
-        # Debounce variables for omnirig report
-        self._omnirig_fail_count: int = 0
-        self._omnirig_fail_threshold: int = 3
-        self._last_omnirig_report: str = ""
-        self._row_default_bg: str | None = None
-        self._calib_instruction_var = tk.StringVar(
-            value="Calibration Wizard: press Start Calibration to begin guided 4-state testing."
-        )
-        self._calib_progress_var = tk.StringVar(value="Calibration: idle")
-        self._calib_phase = "idle"
-        self._calib_index = -1
-        self._calib_current: dict[str, Any] | None = None
-        self._calib_records: list[dict[str, Any]] = []
-        self._calib_scenarios: list[dict[str, str]] = [
-            {
-                "id": "off_knob_a",
-                "title": "1/4 Split OFF, knob on A",
-                "setup": "Set split OFF and make the real radio knob control VFO A.",
-            },
-            {
-                "id": "off_knob_b",
-                "title": "2/4 Split OFF, knob on B",
-                "setup": "Set split OFF and make the real radio knob control VFO B.",
-            },
-            {
-                "id": "on_start_a",
-                "title": "3/4 Split ON, start from A",
-                "setup": "Start from knob on A, then enable split.",
-            },
-            {
-                "id": "on_start_b",
-                "title": "4/4 Split ON, start from B",
-                "setup": "Start from knob on B, then enable split.",
-            },
-        ]
-
-        self._build_layout()
 
     def _build_layout(self) -> None:
         self._root.columnconfigure(0, weight=1)
