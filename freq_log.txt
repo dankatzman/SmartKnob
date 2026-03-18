@@ -2308,3 +2308,17 @@ freq_a=14206000, freq_b=7198000, split=False, vfo_route=None, tx_vfo=A
 29) freq_a=14367000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
 1) freq_a=14367000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
 1) freq_a=14367000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14397000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+2) freq_a=14402000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14402000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14402000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14402000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A
+1) freq_a=14402000, freq_b=14372000, split=False, vfo_route=None, tx_vfo=A

@@ -6,7 +6,12 @@ class LogWindow:
         self._root.minsize(100, 80)
         self._refresh_ms = refresh_ms
         self._log_path = log_path
-        self._window_state_path = Path(__file__).resolve().parents[1] / "log_window_state.json"
+        import sys, os
+        if getattr(sys, 'frozen', False):
+            app_dir = Path(sys.executable).parent
+        else:
+            app_dir = Path(__file__).resolve().parents[1]
+        self._window_state_path = app_dir / "log_window_state.json"
         self._session_start = session_start
         self._text = tk.Text(self._root, wrap="none", font=("Consolas", 10), state="disabled", height=20)
         self._text.pack(fill="both", expand=True)
@@ -227,11 +232,73 @@ def _widget_bg(parent: tk.Widget) -> str:
 
 class RigMonitorWindow:
     def __init__(self, rig: RigAdapter, refresh_ms: int = 200, log_path: str | None = None) -> None:
+
         # --- Create the root window first ---
         self._root = tk.Tk()
+        self._root.overrideredirect(True)  # Frameless window (no title bar)
         self._root.title("vfoStepsKnob - Radio Monitor")
         self._root.attributes("-topmost", True)  # Always on top
         self._root.minsize(100, 80)
+
+        # --- Custom title bar frame ---
+
+        # Softer, modern custom title bar
+        self._titlebar = tk.Frame(self._root, bg="#f5f6fa", relief="flat", bd=0, height=32, highlightthickness=1, highlightbackground="#e0e0e0")
+        self._titlebar.pack(fill="x", side="top")
+
+        # Use grid to center the title label
+        self._titlebar.grid_columnconfigure(0, weight=1)
+        self._titlebar.grid_columnconfigure(1, weight=0)
+        self._titlebar.grid_columnconfigure(2, weight=1)
+
+        # Centered title label
+        self._title_label = tk.Label(
+            self._titlebar,
+            text="Smart Knob",
+            bg="#f5f6fa",
+            fg="blue",  # Blue to match 'NO' in Split Mode
+            font=("Segoe UI", 13, "bold"),
+            anchor="center",
+            padx=6,
+            pady=0
+        )
+        self._title_label.grid(row=0, column=1, sticky="nsew")
+
+        # Close (X) button in title bar (smaller, less padding)
+        self._close_btn = tk.Button(
+            self._titlebar,
+            text="✕",
+            command=self._root.destroy,
+            bg="#e0e7ef",
+            fg="#666",
+            bd=0,
+            font=("Segoe UI", 9, "bold"),
+            activebackground="#d1d8e6",
+            activeforeground="#222",
+            cursor="hand2",
+            padx=4,
+            pady=0,
+            relief="flat",
+            highlightthickness=0,
+            height=1,
+        )
+        self._close_btn.grid(row=0, column=2, sticky="e", padx=4, pady=2)
+        self._close_btn.configure(overrelief="ridge")
+
+        # Allow window dragging by the title bar
+        def start_move(event):
+            self._root.x = event.x
+            self._root.y = event.y
+        def stop_move(event):
+            self._root.x = None
+            self._root.y = None
+        def do_move(event):
+            x = self._root.winfo_pointerx() - self._root.x
+            y = self._root.winfo_pointery() - self._root.y
+            self._root.geometry(f"+{x}+{y}")
+        self._titlebar.bind('<Button-1>', start_move)
+        self._titlebar.bind('<ButtonRelease-1>', stop_move)
+        self._titlebar.bind('<B1-Motion>', do_move)
 
         # --- Now initialize all instance variables that depend on Tk ---
         self._rig = rig
@@ -323,7 +390,12 @@ class RigMonitorWindow:
         ]
 
         # Restore window geometry if available
-        self._window_state_path = Path(__file__).resolve().parents[1] / "main_window_state.json"
+        import sys, os
+        if getattr(sys, 'frozen', False):
+            app_dir = Path(sys.executable).parent
+        else:
+            app_dir = Path(__file__).resolve().parents[1]
+        self._window_state_path = app_dir / "main_window_state.json"
         try:
             if self._window_state_path.exists():
                 with open(self._window_state_path, "r", encoding="utf-8") as f:
@@ -355,17 +427,15 @@ class RigMonitorWindow:
 
     def _build_layout(self) -> None:
         self._root.columnconfigure(0, weight=1)
+        # Place the main frame below the custom title bar
         frame = ttk.Frame(self._root, padding=6)
-        frame.grid(row=0, column=0, sticky="nsew")
+        frame.pack(fill="both", expand=True)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=0)
         frame.columnconfigure(3, weight=0)
 
-        # Restore header to only 'Smart Knob' label
-        title = ttk.Label(frame, text="Smart Knob", font=("Segoe UI", 15, "bold"), anchor="center", justify="center")
-        title.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 0))
-        # Remove extra padding above the frame to move header up
-        self._root.grid_rowconfigure(0, minsize=0)
+        # Remove header label since title is in the custom title bar
+        # Pull up all other lines for a more compact layout
         frame.grid_columnconfigure(0, weight=0)
         frame.grid_columnconfigure(1, weight=0)
         frame.grid_columnconfigure(2, weight=0)
