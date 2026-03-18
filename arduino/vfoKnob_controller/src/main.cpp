@@ -1,3 +1,10 @@
+#define LED_RX_PIN 11
+#define LED_TX_PIN 12
+
+#include <Arduino.h>
+#include <SoftwareSerial.h>
+
+// Track if last freq change was manual (not from Arduino knob)
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 
@@ -73,6 +80,8 @@ volatile long pendingHz = 0;
 
 // ── Frequency tracking ────────────────────────────────────────────────────────
 
+// Track if last freq change was manual (not from Arduino knob)
+
 // After sending SET_FREQ, ignore LCD_FREQ updates from Python for this long.
 // Keeps the LCD stable while the knob is being turned.
 unsigned long freqTxIgnoreUntilMs = 0;
@@ -104,8 +113,6 @@ volatile bool stepChanged = false; // Set by ISR, handled in main loop
 // ── Button ────────────────────────────────────────────────────────────────────
 
 int lastSw = HIGH;
-
-// ── LCD field layout ──────────────────────────────────────────────────────────
 //
 //  Col: 0 1         9 10 11       15
 //       ┌─┬─────────┬──┬──────────┐
@@ -115,8 +122,7 @@ int lastSw = HIGH;
 //       └─┴─────────┴──┴──────────┘
 //
 //  FREQ field: col 1–9  (9 chars), rows 0 and 1.
-//  FROM/UP field: col 10–15, row 0 — e.g. " 5-10"
-//  STEP field: col 11–15 (5 chars), row 1 only — e.g. " 1KHZ" or ".5KHZ".
+
 //  Each field has exactly one write function — no other code touches its columns.
 
 // Frequencies shown on the LCD — updated by LCD_FREQ and pollFreqSend.
@@ -124,6 +130,10 @@ long lcdFreqA = 0;
 long lcdFreqB = 0;
 char lcdActiveVfo = 'A';
 char txVfo = 'A';    // which VFO is TX — updated from LCD_FREQ every cycle
+
+// Track if last freq change was external (manual)
+bool externalFreqA = false;
+bool externalFreqB = false;
 
 long lastLcdFreqA = -1;
 long lastLcdFreqB = -1;
@@ -221,28 +231,52 @@ void writeFromUpFieldBlink(long fromKHz, long upKHz, bool blinkFrom, bool blinkU
 
 // Only writeStepField() may write to col 11–15 on row 1.
 void writeStepField(long hz, bool editing = false, bool blinkNumbers = false, bool numbersVisible = true) {
-  // Only the numbers blink, 'KHZ' is always visible
+  // Only the numbers blink, 'K' is always visible and right-justified
+  // Always clear the field first (5 chars)
   lcd.setCursor(11, 1);
-  // Always clear the field first
   lcd.print("     ");
-  lcd.setCursor(11, 1);
   if (hz >= 1000) {
-    // " 1KHz"
+    // 1K, right-justified: "   1K"
     if (editing && blinkNumbers && !numbersVisible) {
-      lcd.print("  K");
+      lcd.setCursor(11, 1);
+      lcd.print("    "); // 4 spaces
+      lcd.setCursor(15, 1);
+      lcd.print("K");
     } else {
-      lcd.print(" 1K");
+      lcd.setCursor(11, 1);
+      lcd.print("   1");
+      lcd.setCursor(15, 1);
+      lcd.print("K");
     }
-    lcd.print("Hz");
   } else {
-    // ".5KHz"
+    // .5K, right-justified: "  .5K"
     if (editing && blinkNumbers && !numbersVisible) {
-      lcd.print("  K");
+      lcd.setCursor(11, 1);
+      lcd.print("    "); // 4 spaces
+      lcd.setCursor(15, 1);
+      lcd.print("K");
     } else {
-      lcd.print(".5K");
+      lcd.setCursor(11, 1);
+      lcd.print("  .5");
+      lcd.setCursor(15, 1);
+      lcd.print("K");
     }
-    lcd.print("Hz");
   }
+}
+
+// ── Split offset field (col 10–15, row 1) — shown only in split mode ─────────
+// Shows offset between controlled and frozen VFO, e.g. " +2.0K", "+12.5K".
+void writeSplitOffsetField(long offsetHz) {
+  char sign = (offsetHz >= 0) ? '+' : '-';
+  long absHz  = (offsetHz >= 0) ? offsetHz : -offsetHz;
+  long intKhz = absHz / 1000L;
+  int  frac   = (int)((absHz % 1000L) / 100L); // 0 or 5
+  char inner[7];
+  snprintf(inner, sizeof(inner), "%c%ld.%dK", sign, intKhz, frac);
+  char buf[7];
+  snprintf(buf, sizeof(buf), "%6s", inner); // right-justify in 6 chars
+  lcd.setCursor(10, 1);
+  lcd.print(buf);
 }
 
 // ── FREQ field (col 1–9, 9 chars) ────────────────────────────────────────────
@@ -297,7 +331,15 @@ void updateLcd() {
   writeFreqField(0, lcdFreqA);
   writeFromUpField(rangeFromKHz, rangeUpKHz); // row 0, col 10-15
   writeFreqField(1, lcdFreqB);
-  writeStepField(stepHz, uiState == STATE_EDIT);
+  if (splitActive) {
+    bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+    char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
+    long controlledHz = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
+    long frozenHz     = (targetVfo == 'A') ? lcdFreqB : lcdFreqA;
+    writeSplitOffsetField(controlledHz - frozenHz);
+  } else {
+    writeStepField(stepHz, uiState == STATE_EDIT);
+  }
 }
 
 // ── Encoder ISR ───────────────────────────────────────────────────────────────
@@ -335,7 +377,12 @@ void encoderISR() {
       if (encAccum >= 2) { // CCW (down)
         if (*snapPending) {
           long snapped = (baseFreq / stepHz) * stepHz;
-          pendingHz += (snapped - baseFreq);
+          long delta = snapped - baseFreq;
+          if (delta == 0) {
+            pendingHz -= stepHz;
+          } else {
+            pendingHz += delta;
+          }
           *snapPending = false;
         } else {
           pendingHz -= stepHz;
@@ -343,7 +390,12 @@ void encoderISR() {
       } else if (encAccum <= -2) { // CW (up)
         if (*snapPending) {
           long snapped = ((baseFreq + stepHz - 1) / stepHz) * stepHz;
-          pendingHz += (snapped - baseFreq);
+          long delta = snapped - baseFreq;
+          if (delta == 0) {
+            pendingHz += stepHz;
+          } else {
+            pendingHz += delta;
+          }
           *snapPending = false;
         } else {
           pendingHz += stepHz;
@@ -390,21 +442,30 @@ void handleCommand(const char *line) {
     char *p = (char *)line + 9;
     bool gateOpen = (millis() >= freqTxIgnoreUntilMs);
     long newA = atol(p);
-    Serial.print("DBG LCD_FREQ: newA="); Serial.print(newA);
-    Serial.print(" gateOpen="); Serial.print(gateOpen ? "Y" : "N");
-    Serial.print(" lcdFreqA_before="); Serial.println(lcdFreqA);
-    ftdiSerial.print("DBG:LCD_FREQ newA="); ftdiSerial.print(newA);
-    ftdiSerial.print(" gate="); ftdiSerial.print(gateOpen ? "Y" : "N");
-    ftdiSerial.print(" lcdFreqA_was="); ftdiSerial.println(lcdFreqA);
+    // DEBUG: Commented out by Copilot at user request. Uncomment for LCD_FREQ debug info.
+    // Serial.print("DBG LCD_FREQ: newA="); Serial.print(newA);
+    // Serial.print(" gateOpen="); Serial.print(gateOpen ? "Y" : "N");
+    // Serial.print(" lcdFreqA_before="); Serial.println(lcdFreqA);
+    // ftdiSerial.print("DBG:LCD_FREQ newA="); ftdiSerial.print(newA);
+    // ftdiSerial.print(" gate="); ftdiSerial.print(gateOpen ? "Y" : "N");
+    // ftdiSerial.print(" lcdFreqA_was="); ftdiSerial.println(lcdFreqA);
     if (gateOpen && newA > 0) {
-      if (lcdFreqA != newA) snapPendingA = true;
+      if (lcdFreqA != newA) {
+        // Mark as external/manual change — snap on next encoder click
+        externalFreqA = true;
+        snapPendingA = true;
+      }
       lcdFreqA = newA;
     }
     p = strchr(p, ':');
     if (p) {
       long newB = atol(++p);
       if (gateOpen && newB > 0) {
-        if (lcdFreqB != newB) snapPendingB = true;
+        if (lcdFreqB != newB) {
+          // Mark as external/manual change — snap on next encoder click
+          externalFreqB = true;
+          snapPendingB = true;
+        }
         lcdFreqB = newB;
       }
       p = strchr(p, ':');
@@ -417,10 +478,15 @@ void handleCommand(const char *line) {
     }
 
     // ── Split transition detection ──────────────────────────────────────────
-    bool wasSplit = (oldTxVfo != oldActiveVfo);
-    bool isSplit  = (txVfo != lcdActiveVfo);
+    // splitOffCount: debounce split-OFF — require 2 consecutive non-split frames
+    // before acting, to ignore brief radio glitches when tuning the TX VFO.
+    // Uses splitActive (not wasSplit) so the counter survives across frames.
+    static int splitOffCount = 0;
 
-    if (!wasSplit && isSplit) {
+    bool isSplit = (txVfo != lcdActiveVfo);
+
+    if (!splitActive && isSplit) {
+      splitOffCount = 0; // entering split — reset debounce
       // Split just turned ON — set the target VFO to baseFreq + FROM
       long baseFreq = (oldActiveVfo == 'A') ? oldFreqA : oldFreqB;
       if (baseFreq > 0) {
@@ -432,7 +498,7 @@ void handleCommand(const char *line) {
         bool isHunter  = (digitalRead(KNOB_TARGET_SW) == HIGH);
         char targetVfo = isHunter ? txVfo : lcdActiveVfo;
         splitTargetVfo = targetVfo;
-        ftdiSerial.print("SET_FREQ:");
+        ftdiSerial.print("SNAP_FREQ:");
         ftdiSerial.print(splitRangeLow);
         ftdiSerial.print(":");
         ftdiSerial.println(targetVfo);
@@ -441,22 +507,30 @@ void handleCommand(const char *line) {
         if (targetVfo == 'A') { lcdFreqA = splitRangeLow; lastLcdFreqA = splitRangeLow; }
         else                  { lcdFreqB = splitRangeLow; lastLcdFreqB = splitRangeLow; }
       }
-    } else if (wasSplit && !isSplit) {
-      // Split turned OFF — snap tuned VFO to nearest step boundary
-      long curFreq = (splitTargetVfo == 'A') ? lcdFreqA : lcdFreqB;
-      if (curFreq > 0 && stepHz > 0) {
-        long snapped = ((curFreq + stepHz / 2) / stepHz) * stepHz;
-        ftdiSerial.print("SET_FREQ:");
-        ftdiSerial.print(snapped);
-        ftdiSerial.print(":");
-        ftdiSerial.println(splitTargetVfo);
-        freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
-        if (splitTargetVfo == 'A') { lcdFreqA = snapped; lastLcdFreqA = snapped; }
-        else                       { lcdFreqB = snapped; lastLcdFreqB = snapped; }
+    } else if (splitActive && !isSplit) {
+      // Debounce: only fire split OFF after 2 consecutive non-split frames
+      splitOffCount++;
+      if (splitOffCount >= 6) {
+        splitOffCount = 0;
+        // Split turned OFF — snap tuned VFO to nearest step boundary
+        long curFreq = (splitTargetVfo == 'A') ? lcdFreqA : lcdFreqB;
+        if (curFreq > 0 && stepHz > 0) {
+          long snapped = ((curFreq + stepHz / 2) / stepHz) * stepHz;
+          ftdiSerial.print("SNAP_FREQ:");
+          ftdiSerial.print(snapped);
+          ftdiSerial.print(":");
+          ftdiSerial.println(splitTargetVfo);
+          freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
+          if (splitTargetVfo == 'A') { lcdFreqA = snapped; lastLcdFreqA = snapped; }
+          else                       { lcdFreqB = snapped; lastLcdFreqB = snapped; }
+        }
+        splitActive    = false;
+        splitRangeLow  = 0;
+        splitRangeHigh = 0;
+        lcd.setCursor(10, 1); lcd.print(' '); // clear leftover offset char at col 10
       }
-      splitActive    = false;
-      splitRangeLow  = 0;
-      splitRangeHigh = 0;
+    } else {
+      splitOffCount = 0; // stable state — reset debounce
     }
 
     if (uiState != STATE_EDIT) {
@@ -496,6 +570,9 @@ void pollFreqSend() {
   long pk = pendingHz;
   interrupts();
 
+  if (pk != 0 || pendingHz != 0) {
+    Serial.print("[pollFreqSend] pk="); Serial.print(pk); Serial.print(" pendingHz="); Serial.println(pendingHz);
+  }
   if (pk == 0 || uiState == STATE_EDIT) return;
 
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
@@ -529,6 +606,10 @@ void pollFreqSend() {
       lcdFreqA = newFreq;
       lastLcdFreqA = newFreq;
       writeFreqField(0, newFreq);
+    }
+    if (splitActive) {
+      long frozenHz = (targetVfo == 'A') ? lcdFreqB : lcdFreqA;
+      writeSplitOffsetField(newFreq - frozenHz);
     }
   } else {
     Serial.println("DBG pollFreqSend: NO_BASE_FREQ (baseFreq=0)");
@@ -592,6 +673,12 @@ byte knobChar[8] = {
 // ── Setup & loop ──────────────────────────────────────────────────────────────
 
 void setup() {
+    pinMode(LED_RX_PIN, OUTPUT);
+    pinMode(LED_TX_PIN, OUTPUT);
+    // Set initial state
+    bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+    digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
+    digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
   Serial.begin(115200);
   // DO NOT REMOVE OR MODIFY THE LINE BELOW!
   // This message is required for verifying serial monitor operation.
@@ -810,6 +897,10 @@ void handleEdit() {
 }
 
 void loop() {
+    // Update LEDs based on toggle
+    bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+    digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
+    digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
   switch (uiState) {
     case STATE_ONAIR:
       handleOnAir();

@@ -3,7 +3,7 @@ class LogWindow:
         self._root = tk.Toplevel(master=parent)
         self._root.withdraw()
         self._root.title("Log Window")
-        self._root.minsize(320, 180)
+        self._root.minsize(100, 80)
         self._refresh_ms = refresh_ms
         self._log_path = log_path
         self._window_state_path = Path(__file__).resolve().parents[1] / "log_window_state.json"
@@ -231,7 +231,7 @@ class RigMonitorWindow:
         self._root = tk.Tk()
         self._root.title("vfoStepsKnob - Radio Monitor")
         self._root.attributes("-topmost", True)  # Always on top
-        self._root.minsize(320, 180)
+        self._root.minsize(100, 80)
 
         # --- Now initialize all instance variables that depend on Tk ---
         self._rig = rig
@@ -252,6 +252,7 @@ class RigMonitorWindow:
         self._pending_freq_hz: int | None = None
         self._pending_freq_vfo: str | None = None
         self._knob_discard_until: float = 0.0
+        self._freq_display_gate_until: float = 0.0
         self._set_freq_gen: int = 0
         self._radio_type_var = tk.StringVar(value="-")
         self._profile_file_var = tk.StringVar(value="-")
@@ -360,13 +361,14 @@ class RigMonitorWindow:
         frame.columnconfigure(2, weight=0)
         frame.columnconfigure(3, weight=0)
 
+        # Restore header to only 'Smart Knob' label
         title = ttk.Label(frame, text="Smart Knob", font=("Segoe UI", 15, "bold"), anchor="center", justify="center")
         title.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 0))
         # Remove extra padding above the frame to move header up
         self._root.grid_rowconfigure(0, minsize=0)
-        frame.grid_columnconfigure(0, weight=1)
-        frame.grid_columnconfigure(1, weight=1)
-        frame.grid_columnconfigure(2, weight=1)
+        frame.grid_columnconfigure(0, weight=0)
+        frame.grid_columnconfigure(1, weight=0)
+        frame.grid_columnconfigure(2, weight=0)
         frame.grid_columnconfigure(3, weight=1)
 
         self._radio_type_name_label, self._radio_type_value_label = self._row(frame, 1, "Radio Type", self._radio_type_var)
@@ -380,9 +382,47 @@ class RigMonitorWindow:
         self._vfo_b_value_label = tk.Label(frame, textvariable=self._vfo_b_var, font=("Consolas", 12), anchor="w")
         self._vfo_b_value_label.grid(row=3, column=1, sticky="w", pady=0)
         self._render_vfo_b_name_label()
-        self._row(frame, 4, "VFO Route", self._vfo_route_var, pady=0)
-        self._row(frame, 5, "Split Mode", self._split_var, pady=0)
-        self._row(frame, 6, "Current Knob Frequency", self._current_freq_var, pady=0)
+        # Place Split Mode and VFO Route on the same row to save space
+        # Place Split Mode value immediately after the label
+        # Place Split Mode (bold) and value, then VFO Route and value, all close together on the same row
+        # Render Split Mode and value as a single label, left-justified, with no space between
+        # Combine Split Mode and VFO Route into a single label for perfect left alignment
+        # Use a Text widget to color YES/NO
+        split_vfo_text = tk.Text(frame, height=1, width=48, borderwidth=0, highlightthickness=0, font=("Segoe UI", 11, "bold"))
+        split_vfo_text.grid(row=4, column=0, sticky="w", padx=0, pady=0, columnspan=4)
+        split_vfo_text.tag_configure("yes", foreground="#0b5f0b")
+        split_vfo_text.tag_configure("no", foreground="blue")
+        split_vfo_text.tag_configure("label", font=("Segoe UI", 11, "bold"))
+        split_vfo_text.tag_configure("route", font=("Segoe UI", 11, "bold"))
+        split_vfo_text.config(state="disabled")
+
+        def update_split_vfo_text(*args):
+            split_vfo_text.config(state="normal")
+            split_vfo_text.delete("1.0", "end")
+            split_val = self._split_var.get().strip().upper()
+            color_tag = "yes" if split_val == "YES" else "no"
+            split_vfo_text.insert("end", "Split Mode: ", "label")
+            split_vfo_text.insert("end", self._split_var.get(), color_tag)
+            split_vfo_text.insert("end", "        VFO Route: ", "route")
+            split_vfo_text.insert("end", self._vfo_route_var.get())
+            split_vfo_text.config(state="disabled")
+        self._split_var.trace_add('write', update_split_vfo_text)
+        self._vfo_route_var.trace_add('write', update_split_vfo_text)
+        update_split_vfo_text()
+        # Force RX/TX frequency refresh after split mode changes
+        def force_freq_refresh(*args):
+            if time.monotonic() < self._freq_display_gate_until:
+                return
+            try:
+                freq_a = self._rig.get_raw_param("FreqA")
+                freq_b = self._rig.get_raw_param("FreqB")
+                self._vfo_a_var.set(_fmt_hz(freq_a) if freq_a else "N/A")
+                self._vfo_b_var.set(_fmt_hz(freq_b) if freq_b else "N/A")
+            except Exception:
+                self._vfo_a_var.set("N/A")
+                self._vfo_b_var.set("N/A")
+        self._split_var.trace_add('write', force_freq_refresh)
+        # self._row(frame, 6, "Current Knob Freq", self._current_freq_var, pady=0)  # Commented out for later use if needed
 
         if self._radio_type_name_label is not None:
             self._radio_type_name_label.configure(font=("Segoe UI", 12, "bold"))
@@ -435,37 +475,37 @@ class RigMonitorWindow:
         if self._rig.uses_display_slot_mode():
             # IC-7300 style: OmniRig always puts knob freq in slot A regardless of A/B.
             if split is True:
-                row_a_label = "Knob Frequency (RX)"
-                row_b_label = "Sub Frequency (TX)"
+                row_a_label = "Knob Freq (RX)"
+                row_b_label = "Sub Freq (TX)"
             elif split is False:
-                row_a_label = "Knob Frequency (RX / TX)"
-                row_b_label = "Sub Frequency (standby)"
+                row_a_label = "Knob Freq (RXTX)"
+                row_b_label = "Sub Freq"
         else:
-            # Generic radio: labels are fixed (Knob Frequency top, Sub Frequency bottom).
+            # Generic radio: labels are fixed (Knob Freq top, Sub Freq bottom).
             # Hz values are swapped in _refresh when the knob is on VFO B.
             if split is True:
                 knob_role = self._rig.get_split_knob_role()
                 if knob_role == "tx":
-                    row_a_label = "Knob Frequency (TX)"
-                    row_b_label = "Sub Frequency (RX)"
+                    row_a_label = "Knob Freq (TX)"
+                    row_b_label = "Sub Freq (RX)"
                 elif knob_role == "rx":
-                    row_a_label = "Knob Frequency (RX)"
-                    row_b_label = "Sub Frequency (TX)"
+                    row_a_label = "Knob Freq (RX)"
+                    row_b_label = "Sub Freq (TX)"
                 else:
                     knob_vfo = self._rig.get_knob_display_vfo()
                     route = self._rig.get_vfo_route()  # e.g. "AB": route[0]=RX, route[1]=TX
                     if route and len(route) == 2 and knob_vfo == route[1]:
-                        row_a_label = "Knob Frequency (TX)"
-                        row_b_label = "Sub Frequency (RX)"
+                        row_a_label = "Knob Freq (TX)"
+                        row_b_label = "Sub Freq (RX)"
                     else:
-                        row_a_label = "Knob Frequency (RX)"
-                        row_b_label = "Sub Frequency (TX)"
+                        row_a_label = "Knob Freq (RX)"
+                        row_b_label = "Sub Freq (TX)"
             elif split is False:
-                row_a_label = "Knob Frequency (RX / TX)"
-                row_b_label = "Sub Frequency"
+                row_a_label = "Knob Freq (RXTX)"
+                row_b_label = "Sub Freq"
             else:
-                row_a_label = "Knob Frequency"
-                row_b_label = "Sub Frequency"
+                row_a_label = "Knob Freq"
+                row_b_label = "Sub Freq"
         self._vfo_a_name_var.set(row_a_label)
         self._vfo_b_name_var.set(row_b_label)
 
@@ -481,34 +521,44 @@ class RigMonitorWindow:
 
         text = self._vfo_a_name_var.get()
         base_font = ("Segoe UI", 11, "bold")
-        match = re.fullmatch(r"Knob Frequency \((RX)(\s*/\s*)(TX)\)", text)
+        match = re.fullmatch(r"Knob Freq \((RX)(\s*/\s*)(TX)\)", text)
         if match:
-            tk.Label(self._vfo_a_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
-            tk.Label(self._vfo_a_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
-            tk.Label(self._vfo_a_name_container, text=match.group(2), font=base_font, anchor="w").grid(row=0, column=2, sticky="w")
-            tk.Label(self._vfo_a_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=3, sticky="w")
-            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w")
-            self._vfo_a_name_label.grid(row=0, column=4, sticky="w")
+            tk.Label(self._vfo_a_name_container, text="Knob Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_a_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_a_name_container, text="/", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_a_name_container, text="TX", font=base_font, fg="#d00000", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_a_name_label.pack(side="left", padx=0, pady=0)
             return
 
-        match = re.fullmatch(r"Knob Frequency \((RX)\)", text)
+        # Add support for Knob Freq (RXTX) label with colored RX and TX
+        match = re.fullmatch(r"Knob Freq \((RXTX)\)", text)
         if match:
-            tk.Label(self._vfo_a_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
-            tk.Label(self._vfo_a_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
-            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w")
-            self._vfo_a_name_label.grid(row=0, column=2, sticky="w")
+            tk.Label(self._vfo_a_name_container, text="Knob Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_a_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_a_name_container, text="TX", font=base_font, fg="#d00000", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_a_name_label.pack(side="left", padx=0, pady=0)
             return
 
-        match = re.fullmatch(r"Knob Frequency \((TX)\)", text)
+        match = re.fullmatch(r"Knob Freq \((RX)\)", text)
         if match:
-            tk.Label(self._vfo_a_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
-            tk.Label(self._vfo_a_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=1, sticky="w")
-            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w")
-            self._vfo_a_name_label.grid(row=0, column=2, sticky="w")
+            tk.Label(self._vfo_a_name_container, text="Knob Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_a_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_a_name_label.pack(side="left", padx=0, pady=0)
             return
 
-        self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=text + ":", font=base_font, anchor="w")
-        self._vfo_a_name_label.grid(row=0, column=0, sticky="w")
+        match = re.fullmatch(r"Knob Freq \((TX)\)", text)
+        if match:
+            tk.Label(self._vfo_a_name_container, text="Knob Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_a_name_container, text="TX", font=base_font, fg="#d00000", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_a_name_label.pack(side="left", padx=0, pady=0)
+            return
+
+        self._vfo_a_name_label = tk.Label(self._vfo_a_name_container, text=text + ":", font=base_font, anchor="w", padx=0)
+        self._vfo_a_name_label.pack(side="left", padx=0, pady=0)
 
     def _render_vfo_b_name_label(self) -> None:
         if self._vfo_b_name_container is None:
@@ -519,42 +569,52 @@ class RigMonitorWindow:
 
         text = self._vfo_b_name_var.get()
         base_font = ("Segoe UI", 11, "bold")
-        match = re.fullmatch(r"Knob Frequency \((RX)(\s*/\s*)(TX)\)", text)
+        match = re.fullmatch(r"Knob Freq \((RX)(\s*/\s*)(TX)\)", text)
         if match:
-            tk.Label(self._vfo_b_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
-            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
-            tk.Label(self._vfo_b_name_container, text=match.group(2), font=base_font, anchor="w").grid(row=0, column=2, sticky="w")
-            tk.Label(self._vfo_b_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=3, sticky="w")
-            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
-            self._vfo_b_name_label.grid(row=0, column=4, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="Knob Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="/", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="TX", font=base_font, fg="#d00000", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_b_name_label.pack(side="left", padx=0, pady=0)
             return
 
-        match = re.fullmatch(r"Knob Frequency \((RX)\)", text)
+        # Add support for Knob Freq (RXTX) label with colored RX and TX
+        match = re.fullmatch(r"Knob Freq \((RXTX)\)", text)
         if match:
-            tk.Label(self._vfo_b_name_container, text="Knob Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
-            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
-            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
-            self._vfo_b_name_label.grid(row=0, column=2, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="Knob Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="TX", font=base_font, fg="#d00000", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_b_name_label.pack(side="left", padx=0, pady=0)
             return
 
-        match = re.fullmatch(r"Sub Frequency \((TX)\)", text)
+        match = re.fullmatch(r"Knob Freq \((RX)\)", text)
         if match:
-            tk.Label(self._vfo_b_name_container, text="Sub Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
-            tk.Label(self._vfo_b_name_container, text="TX", font=base_font, fg="#d00000", anchor="w").grid(row=0, column=1, sticky="w")
-            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
-            self._vfo_b_name_label.grid(row=0, column=2, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="Knob Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_b_name_label.pack(side="left", padx=0, pady=0)
             return
 
-        match = re.fullmatch(r"Sub Frequency \((RX)\)", text)
+        match = re.fullmatch(r"Sub Freq \((TX)\)", text)
         if match:
-            tk.Label(self._vfo_b_name_container, text="Sub Frequency (", font=base_font, anchor="w").grid(row=0, column=0, sticky="w")
-            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w").grid(row=0, column=1, sticky="w")
-            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w")
-            self._vfo_b_name_label.grid(row=0, column=2, sticky="w")
+            tk.Label(self._vfo_b_name_container, text="Sub Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="TX", font=base_font, fg="#d00000", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_b_name_label.pack(side="left", padx=0, pady=0)
             return
 
-        self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=text + ":", font=base_font, anchor="w")
-        self._vfo_b_name_label.grid(row=0, column=0, sticky="w")
+        match = re.fullmatch(r"Sub Freq \((RX)\)", text)
+        if match:
+            tk.Label(self._vfo_b_name_container, text="Sub Freq (", font=base_font, anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            tk.Label(self._vfo_b_name_container, text="RX", font=base_font, fg="#0b5f0b", anchor="w", padx=0).pack(side="left", padx=0, pady=0)
+            self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=")", font=base_font, anchor="w", padx=0)
+            self._vfo_b_name_label.pack(side="left", padx=0, pady=0)
+            return
+
+        self._vfo_b_name_label = tk.Label(self._vfo_b_name_container, text=text + ":", font=base_font, anchor="w", padx=0)
+        self._vfo_b_name_label.pack(side="left", padx=0, pady=0)
 
     def _apply_split_visual_effect(self, split: bool | None) -> None:
         if self._row_default_bg is None:
@@ -706,6 +766,10 @@ class RigMonitorWindow:
                     payload = line[9:]
                     _dprint(f"[reader] dispatching SET_FREQ: {payload}")
                     self._root.after(0, lambda p=payload: self._on_set_freq(p))
+                elif line.startswith("SNAP_FREQ:"):
+                    payload = line[10:]
+                    _dprint(f"[reader] dispatching SNAP_FREQ: {payload}")
+                    self._root.after(0, lambda p=payload: self._on_snap_freq(p))
                 elif line == "NO_BASE_FREQ":
                     _dprint(f"[reader] NO_BASE_FREQ — Arduino has no base frequency yet")
                     self._root.after(0, self._on_no_base_freq)
@@ -960,11 +1024,34 @@ class RigMonitorWindow:
             self._pending_freq_hz = hz
             self._pending_freq_vfo = vfo
             self._current_freq_var.set(_fmt_hz(hz))
+            self._freq_display_gate_until = time.monotonic() + 0.8
             self._set_freq_gen += 1
             gen = self._set_freq_gen
             _dprint(f"[_on_set_freq] calling set_frequency({hz}, {vfo}) gen={gen}")
             self._rig.set_frequency(hz, vfo)
             self._root.after(600, lambda h=hz, v=vfo, g=gen: self._retry_set_freq(h, v, g, attempt=1))
+            self._set_knob_report("Knob active", ok=True)
+            self._knob_status_until = time.monotonic() + 2.0
+        except Exception as exc:
+            self._set_knob_report(f"Set freq error: {exc}", ok=False)
+            self._knob_status_until = time.monotonic() + 4.0
+
+    def _on_snap_freq(self, payload: str) -> None:
+        """Called when the Arduino sends SNAP_FREQ:<hz>:<vfo> (automatic snap, no retry)."""
+        try:
+            parts = payload.split(":")
+            hz = int(parts[0])
+            vfo = parts[1] if len(parts) > 1 else self._rig.get_knob_display_vfo()
+            if hz <= 0:
+                return
+            if vfo == "A":
+                self._vfo_a_var.set(_fmt_hz(hz))
+            elif vfo == "B":
+                self._vfo_b_var.set(_fmt_hz(hz))
+            self._current_freq_var.set(_fmt_hz(hz))
+            self._freq_display_gate_until = time.monotonic() + 0.8
+            _dprint(f"[_on_snap_freq] calling set_frequency({hz}, {vfo}) — no retry")
+            self._rig.set_frequency(hz, vfo)
             self._set_knob_report("Knob active", ok=True)
             self._knob_status_until = time.monotonic() + 2.0
         except Exception as exc:
@@ -982,7 +1069,7 @@ class RigMonitorWindow:
             self._rig.set_frequency(hz, vfo)
         except Exception as exc:
             print(f"[_retry_set_freq] exception: {exc}")
-        if attempt < 20:  # keep retrying every 500ms for up to 10 seconds
+        if attempt < 3:  # retry up to 2 times (1 second) for OmniRig not-responding
             self._root.after(500, lambda h=hz, v=vfo, g=gen, a=attempt+1: self._retry_set_freq(h, v, g, a))
 
     def _on_no_base_freq(self) -> None:
@@ -1054,39 +1141,14 @@ class RigMonitorWindow:
                 self._last_omnirig_report = "Active"
             self._radio_type_var.set(self._rig.get_radio_type())
 
-            # Handle pending frequency confirmation
-            if self._pending_freq_hz is not None and freq_current == self._pending_freq_hz:
-                # Radio confirmed the pending value; clear pending
-                self._pending_freq_hz = None
-                self._pending_freq_vfo = None
-
-            if self._pending_freq_hz is not None:
-                # Still waiting for radio confirmation; keep showing pending value
-                self._current_freq_var.set(_fmt_hz(self._pending_freq_hz))
-                split = self._rig.read_split_mode()
-                if split:
-                    tx_vfo = self._rig.get_tx_vfo()
-                    if tx_vfo == "A":
-                        self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
-                        self._vfo_b_var.set(_fmt_hz(freq_b))  # Always update RX from radio
-                    elif tx_vfo == "B":
-                        self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
-                        self._vfo_a_var.set(_fmt_hz(freq_a))  # Always update RX from radio
-                else:
-                    # Not split: update both fields as usual
-                    if not self._rig.uses_display_slot_mode() and self._rig.get_knob_display_vfo() == "B":
-                        self._vfo_a_var.set(_fmt_hz(freq_b))
-                        self._vfo_b_var.set(_fmt_hz(self._pending_freq_hz))
-                    else:
-                        self._vfo_a_var.set(_fmt_hz(self._pending_freq_hz))
-                        self._vfo_b_var.set(_fmt_hz(freq_b))
+            if time.monotonic() < self._freq_display_gate_until:
+                pass  # gate active: keep display values set by _on_set_freq/_on_snap_freq
             else:
-                # No pending freq: update display with current radio values
+                # Gate expired: update display from radio
                 self._current_freq_var.set(_fmt_hz(freq_current) if freq_current is not None else "N/A")
                 split = self._rig.read_split_mode()
                 if split:
                     tx_vfo = self._rig.get_tx_vfo()
-                    # Always update RX field from radio in split mode
                     if tx_vfo == "A":
                         self._vfo_a_var.set(_fmt_hz(freq_a))
                         self._vfo_b_var.set(_fmt_hz(freq_b))
