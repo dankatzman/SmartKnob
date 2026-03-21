@@ -11,6 +11,12 @@ env/
 # Runtime-generated state
 app_state.ini
 calibration_profiles/
+freq_log.txt
+
+# Build output
+dist/
+*.exe
+nuitka-crash-report.xml
 
 # IDE
 .vscode/
