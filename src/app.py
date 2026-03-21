@@ -11,6 +11,7 @@ from gui_monitor import RigMonitorWindow, LogWindow
 from protocol import CommandProcessor
 from rig_adapter import RigAdapter
 from serial_transport import SerialTransport
+from version import DEBUG_MODE
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -125,7 +126,7 @@ def main() -> None:
         processor = CommandProcessor(rig)
         _run_serial_mode(processor, args.port, args.baud)
     else:
-        log_path = str((Path(__file__).resolve().parents[1] / "freq_log.txt"))
+        log_path = str((Path(__file__).resolve().parents[1] / "freq_log.txt")) if DEBUG_MODE else None
         window = RigMonitorWindow(rig=rig, refresh_ms=150, log_path=log_path)
         def show_log_window():
             try:

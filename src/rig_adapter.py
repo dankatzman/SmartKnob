@@ -4,13 +4,38 @@ from __future__ import annotations
 
 import configparser
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+def _get_project_root() -> Path:
+	"""Locate the application root directory containing radio_profiles.ini.
+
+	Tries multiple locations in order:
+	1. Python source layout: __file__ is in src/, parents[1] is project root.
+	2. Nuitka onefile bundled: radio_profiles.ini extracted alongside modules.
+	3. Exe directory via sys.executable (install folder).
+	4. Exe directory via sys.argv[0] (fallback).
+	"""
+	candidates = [
+		Path(__file__).resolve().parents[1],   # Python source: src/../
+		Path(__file__).resolve().parent,        # Nuitka temp dir (bundled file)
+		Path(sys.executable).resolve().parent,  # Exe install directory
+		Path(sys.argv[0]).resolve().parent,     # Exe directory (argv fallback)
+	]
+	for candidate in candidates:
+		try:
+			if (candidate / "radio_profiles.ini").exists():
+				return candidate
+		except Exception:
+			pass
+	return Path(sys.executable).resolve().parent
+
+
+PROJECT_ROOT = _get_project_root()
 DEFAULT_RADIO_PROFILES_INI = PROJECT_ROOT / "radio_profiles.ini"
 APP_STATE_INI = PROJECT_ROOT / "app_state.ini"
 
@@ -220,6 +245,27 @@ class RigAdapter:
 			return "BB"
 		if vfo_value == 1024:
 			return "BA"
+		# IC-7610: raw_vfo 2048 (simplex / short-press split) and 4096 (long-press split)
+		# Route is determined by split state: AA when simplex, AB when split.
+		if vfo_value in (2048, 4096):
+			return "AA" if not self._last_wrapper_split else "AB"
+		return None
+
+	def get_radio_knob_vfo(self) -> Optional[str]:
+		"""Return which VFO the radio's front-panel knob controls.
+
+		Derived from the raw OmniRig Vfo parameter for IC-7610:
+		  2048 = radio knob on VFO A (simplex or short-press split)
+		  4096 = radio knob on VFO B (long-press split, TX side)
+		Returns None if the value is unrecognized.
+		"""
+		if not self._is_wrapper_backend():
+			return None
+		vfo_value = self._safe_int(self._get_param("Vfo"))
+		if vfo_value == 2048:
+			return "A"
+		if vfo_value == 4096:
+			return "B"
 		return None
 
 	def get_debug_snapshot(self) -> dict[str, Any]:
@@ -423,6 +469,7 @@ class RigAdapter:
 				text=True,
 				timeout=2,
 				check=False,
+				creationflags=subprocess.CREATE_NO_WINDOW,
 			)
 			output = f"{result.stdout}\n{result.stderr}".lower()
 			# Some installs use different exe names (for example OmniRig v2).

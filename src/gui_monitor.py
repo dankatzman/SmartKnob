@@ -118,6 +118,7 @@ from typing import Any
 
 from rig_adapter import RigAdapter
 from serial_transport import SerialTransport
+from version import __version__, DEBUG_MODE
 
 # Baud rate for the FTDI232 auxiliary serial port on the Arduino.
 # Must match FTDI_BAUD in main.cpp.
@@ -315,6 +316,13 @@ class RigMonitorWindow:
                     self._log_session_start = f.tell()
             except Exception:
                 self._log_session_start = 0
+        # Write session separator so each run is clearly marked in the log file
+        if log_path:
+            try:
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(f"\n=== SESSION START {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+            except Exception:
+                pass
         self._refresh_ms = max(100, refresh_ms)
         self._pending_freq_hz: int | None = None
         self._pending_freq_vfo: str | None = None
@@ -521,6 +529,22 @@ class RigMonitorWindow:
             anchor="w",
         )
         self._knob_report_label.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(0, 0))
+
+        # --- R&D DEBUG BAR: remove this block when research is done ---
+        self._debug_label = tk.Label(
+            frame,
+            textvariable=self._debug_var,
+            fg="#555555",
+            font=("Consolas", 9),
+            anchor="w",
+            wraplength=500,
+            justify="left",
+            cursor="hand2",
+        )
+        if DEBUG_MODE:
+            self._debug_label.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        self._debug_label.bind("<Button-1>", lambda e: self._copy_debug_to_clipboard())
+        # --- END R&D DEBUG BAR ---
 
         # The following lines are hidden from the UI but remain in the code for future use:
         # self._row(frame, 10, "Profile File", self._profile_file_var, pady=0)
@@ -734,6 +758,10 @@ class RigMonitorWindow:
             f"split={split}",
             f"vfo_route={vfo_route}",
             f"tx_vfo={state['tx_vfo']}",
+            f"raw_vfo={self._rig.get_raw_param('Vfo')}",
+            f"active_vfo={self._rig.get_active_vfo()}",
+            f"knob_vfo={self._rig.get_knob_display_vfo()}",
+            f"radio_knob_vfo={self._rig.get_radio_knob_vfo()}",
         ]
         line = f"{self._log_counter}) " + ', '.join(fields)
         try:
@@ -1179,7 +1207,9 @@ class RigMonitorWindow:
             self._refresh_loaded_models_label()
             debug = self._rig.get_debug_snapshot()
             self._debug_var.set(
-                f"Debug: backend={debug['backend']} status={debug['status']} vfo={debug['vfo']} route={debug['vfo_route']} freqCur={debug['freq_current']} freqRaw={debug['freq_raw']} knobRow={debug['knob_display_vfo']} knobCmd={debug['knob_command_vfo']} split={debug['split']}"
+                f"freq_a={debug['freq_a']}, freq_b={debug['freq_b']}, split={debug['split']}, "
+                f"vfo_route={debug['vfo_route']}, tx_vfo={self._rig.get_tx_vfo()}, "
+                f"raw_vfo={self._rig.get_raw_param('Vfo')}, active_vfo={debug['vfo']}, knob_vfo={debug['knob_display_vfo']}, radio_knob_vfo={self._rig.get_radio_knob_vfo()}"
             )
         except Exception:
             pass
