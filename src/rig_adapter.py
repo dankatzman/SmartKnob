@@ -38,6 +38,37 @@ def _get_project_root() -> Path:
 PROJECT_ROOT = _get_project_root()
 DEFAULT_RADIO_PROFILES_INI = PROJECT_ROOT / "radio_profiles.ini"
 APP_STATE_INI = PROJECT_ROOT / "app_state.ini"
+LEGAL_FREQ_TXT = PROJECT_ROOT / "legalHFfreq.txt"
+
+
+def load_legal_bands() -> list[tuple[int, int, str]]:
+    """Load allowed amateur radio frequency ranges from legalHFfreq.txt.
+    Returns a list of (low_hz, high_hz, name) tuples, sorted by low_hz.
+    """
+    bands: list[tuple[int, int, str]] = []
+    try:
+        with open(LEGAL_FREQ_TXT, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                low_hz = int(float(parts[0]) * 1_000_000)
+                high_hz = int(float(parts[1]) * 1_000_000)
+                name = parts[2] if len(parts) >= 3 else ""
+                if low_hz < high_hz:
+                    bands.append((low_hz, high_hz, name))
+    except Exception as e:
+        print(f"[load_legal_bands] ERROR loading {LEGAL_FREQ_TXT}: {e}")
+    if bands:
+        print(f"[load_legal_bands] loaded {len(bands)} bands from {LEGAL_FREQ_TXT}")
+    else:
+        print(f"[load_legal_bands] WARNING: no bands loaded (file={LEGAL_FREQ_TXT})")
+    return sorted(bands, key=lambda b: b[0])
+
+
 
 
 def _normalize_radio_key(value: str) -> str:

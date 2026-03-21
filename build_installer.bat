@@ -24,6 +24,7 @@ set OUTPUT_DIR=C:\temp\smartknob_build
     --include-module=radio_poller ^
     --include-module=version ^
     --include-data-files="%~dp0radio_profiles.ini=radio_profiles.ini" ^
+    --include-data-files="%~dp0legalHFfreq.txt=legalHFfreq.txt" ^
     "%~dp0vfoKnob.py"
 
 if errorlevel 1 (
@@ -34,8 +35,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/3] Copying EXE to dist folder...
+echo [2/3] Copying EXE and data files to dist folder...
 copy /y "%OUTPUT_DIR%\smartknob.exe" "%~dp0dist\smartknob.exe"
+copy /y "%~dp0legalHFfreq.txt" "%~dp0dist\legalHFfreq.txt"
 
 echo.
 echo [3/3] Building installer with Inno Setup...

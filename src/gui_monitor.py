@@ -116,7 +116,7 @@ from tkinter import filedialog
 from tkinter import ttk
 from typing import Any
 
-from rig_adapter import RigAdapter
+from rig_adapter import RigAdapter, load_legal_bands
 from serial_transport import SerialTransport
 from version import __version__, DEBUG_MODE
 
@@ -236,70 +236,10 @@ class RigMonitorWindow:
 
         # --- Create the root window first ---
         self._root = tk.Tk()
-        self._root.overrideredirect(True)  # Frameless window (no title bar)
-        self._root.title("vfoStepsKnob - Radio Monitor")
+        self._root.title(f"Smart Knob v{__version__}")
         self._root.attributes("-topmost", True)  # Always on top
+        self._root.resizable(True, True)
         self._root.minsize(100, 80)
-
-        # --- Custom title bar frame ---
-
-        # Softer, modern custom title bar
-        self._titlebar = tk.Frame(self._root, bg="#f5f6fa", relief="flat", bd=0, height=32, highlightthickness=1, highlightbackground="#e0e0e0")
-        self._titlebar.pack(fill="x", side="top")
-
-        # Use grid to center the title label
-        self._titlebar.grid_columnconfigure(0, weight=1)
-        self._titlebar.grid_columnconfigure(1, weight=0)
-        self._titlebar.grid_columnconfigure(2, weight=1)
-
-        # Centered title label
-        self._title_label = tk.Label(
-            self._titlebar,
-            text="Smart Knob",
-            bg="#f5f6fa",
-            fg="blue",  # Blue to match 'NO' in Split Mode
-            font=("Segoe UI", 13, "bold"),
-            anchor="center",
-            padx=6,
-            pady=0
-        )
-        self._title_label.grid(row=0, column=1, sticky="nsew")
-
-        # Close (X) button in title bar (smaller, less padding)
-        self._close_btn = tk.Button(
-            self._titlebar,
-            text="✕",
-            command=self._root.destroy,
-            bg="#e0e7ef",
-            fg="#666",
-            bd=0,
-            font=("Segoe UI", 9, "bold"),
-            activebackground="#d1d8e6",
-            activeforeground="#222",
-            cursor="hand2",
-            padx=4,
-            pady=0,
-            relief="flat",
-            highlightthickness=0,
-            height=1,
-        )
-        self._close_btn.grid(row=0, column=2, sticky="e", padx=4, pady=2)
-        self._close_btn.configure(overrelief="ridge")
-
-        # Allow window dragging by the title bar
-        def start_move(event):
-            self._root.x = event.x
-            self._root.y = event.y
-        def stop_move(event):
-            self._root.x = None
-            self._root.y = None
-        def do_move(event):
-            x = self._root.winfo_pointerx() - self._root.x
-            y = self._root.winfo_pointery() - self._root.y
-            self._root.geometry(f"+{x}+{y}")
-        self._titlebar.bind('<Button-1>', start_move)
-        self._titlebar.bind('<ButtonRelease-1>', stop_move)
-        self._titlebar.bind('<B1-Motion>', do_move)
 
         # --- Now initialize all instance variables that depend on Tk ---
         self._rig = rig
@@ -327,6 +267,8 @@ class RigMonitorWindow:
         self._pending_freq_hz: int | None = None
         self._pending_freq_vfo: str | None = None
         self._knob_discard_until: float = 0.0
+        self._legal_bands = load_legal_bands()
+
         self._freq_display_gate_until: float = 0.0
         self._set_freq_gen: int = 0
         self._radio_type_var = tk.StringVar(value="-")
@@ -841,9 +783,19 @@ class RigMonitorWindow:
             t.open(port, baudrate=_KNOB_BAUD)
             self._transport = t
             self._last_freq_send = time.monotonic()
+            self._send_band_table_to_arduino()
             self._start_knob_reader()
         except Exception:
             self._transport = None
+
+    def _send_band_table_to_arduino(self) -> None:
+        """Send the full legal band table to the Arduino once on connect/reconnect."""
+        if self._transport is None or not self._transport.is_connected:
+            return
+        self._transport.write_line("BAND_CLEAR")
+        for low, high, _ in self._legal_bands:
+            self._transport.write_line(f"BAND_ADD:{low}:{high}")
+
 
     def _start_knob_reader(self) -> None:
         """Background thread that reads encoder events from the Arduino."""
@@ -860,9 +812,11 @@ class RigMonitorWindow:
                     continue
                 if not line.startswith("HELLO_ARDUINO"):
                     _dprint(f"[reader] received: {repr(line)}")
-                if line.startswith("SET_FREQ:"):
+                if line.startswith("HELLO_ARDUINO"):
+                    self._root.after(0, self._send_band_table_to_arduino)
+                elif line.startswith("SET_FREQ:"):
                     payload = line[9:]
-                    _dprint(f"[reader] dispatching SET_FREQ: {payload}")
+                    #print(f"[SET_FREQ] {payload}")
                     self._root.after(0, lambda p=payload: self._on_set_freq(p))
                 elif line.startswith("SNAP_FREQ:"):
                     payload = line[10:]
@@ -873,6 +827,7 @@ class RigMonitorWindow:
                     self._root.after(0, self._on_no_base_freq)
                 elif line == "BTN:PRESS":
                     self._root.after(0, self._on_knob_button_press)
+
 
         threading.Thread(target=reader, daemon=True).start()
 
@@ -1125,9 +1080,10 @@ class RigMonitorWindow:
             self._freq_display_gate_until = time.monotonic() + 0.8
             self._set_freq_gen += 1
             gen = self._set_freq_gen
-            _dprint(f"[_on_set_freq] calling set_frequency({hz}, {vfo}) gen={gen}")
+            freq_a_baseline = self._rig.get_raw_param("FreqA") or 0
+            _dprint(f"[_on_set_freq] calling set_frequency({hz}, {vfo}) gen={gen} baseline={freq_a_baseline}")
             self._rig.set_frequency(hz, vfo)
-            self._root.after(600, lambda h=hz, v=vfo, g=gen: self._retry_set_freq(h, v, g, attempt=1))
+            self._root.after(600, lambda h=hz, v=vfo, g=gen, b=freq_a_baseline: self._retry_set_freq(h, v, g, b, attempt=1))
             self._set_knob_report("Knob active", ok=True)
             self._knob_status_until = time.monotonic() + 2.0
         except Exception as exc:
@@ -1156,19 +1112,23 @@ class RigMonitorWindow:
             self._set_knob_report(f"Set freq error: {exc}", ok=False)
             self._knob_status_until = time.monotonic() + 4.0
 
-    def _retry_set_freq(self, hz: int, vfo: str, gen: int, attempt: int = 1) -> None:
+    def _retry_set_freq(self, hz: int, vfo: str, gen: int, freq_a_baseline: int, attempt: int = 1) -> None:
         """Retry set_frequency — OmniRig may be in 'not responding' state on first call."""
         if self._set_freq_gen != gen:
             return  # User has already sent a newer command, don't override
         status = self._rig.get_raw_param("Status")
         freq_a = self._rig.get_raw_param("FreqA")
-        _dprint(f"[_retry_set_freq] omnirig_status={status} omnirig_freqA={freq_a} target={hz} gen={gen}")
+        _dprint(f"[_retry_set_freq] omnirig_status={status} omnirig_freqA={freq_a} target={hz} baseline={freq_a_baseline} gen={gen}")
+        if freq_a and freq_a_baseline and abs(freq_a - freq_a_baseline) > 1_000_000:
+            _dprint(f"[_retry_set_freq] aborting: radio moved from baseline {freq_a_baseline} to {freq_a} (band switch after knob turn)")
+            self._set_freq_gen += 1  # cancel any remaining retries
+            return
         try:
             self._rig.set_frequency(hz, vfo)
         except Exception as exc:
             print(f"[_retry_set_freq] exception: {exc}")
         if attempt < 3:  # retry up to 2 times (1 second) for OmniRig not-responding
-            self._root.after(500, lambda h=hz, v=vfo, g=gen, a=attempt+1: self._retry_set_freq(h, v, g, a))
+            self._root.after(500, lambda h=hz, v=vfo, g=gen, b=freq_a_baseline, a=attempt+1: self._retry_set_freq(h, v, g, b, a))
 
     def _on_no_base_freq(self) -> None:
         """Called when the Arduino reports it has no base frequency yet."""
@@ -1197,7 +1157,12 @@ class RigMonitorWindow:
                 active_vfo = self._rig.get_knob_display_vfo() if hasattr(self._rig, 'get_knob_display_vfo') else "A"
                 tx_vfo = self._rig.get_tx_vfo()
                 if freq_a and freq_b:
-                    self._transport.write_line(f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}:{tx_vfo}")
+                    msg = f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}:{tx_vfo}"
+                    cs = 0
+                    for c in msg:
+                        cs ^= ord(c)
+                    self._transport.write_line(f"{msg}*{cs:02X}")
+
         except Exception:
             pass
 

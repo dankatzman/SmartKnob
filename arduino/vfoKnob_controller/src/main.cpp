@@ -42,6 +42,10 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 // Hardware debouncing: 0.1µF capacitor from each pin to GND
 const int ENC_CLK = 2;  // CLK (A) — INT0
 const int ENC_DT  = 3;  // DT  (B) — INT1
+
+// Pause/resume only the encoder interrupts (INT0/INT1), leaving SoftwareSerial PCINT running.
+#define ENC_PAUSE()  do { detachInterrupt(digitalPinToInterrupt(ENC_CLK)); detachInterrupt(digitalPinToInterrupt(ENC_DT)); } while(0)
+#define ENC_RESUME() do { attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, CHANGE); attachInterrupt(digitalPinToInterrupt(ENC_DT), encoderISR, CHANGE); } while(0)
 const int ENC_SW  = 6;  // Push button
 const int KNOB_TARGET_SW = 4;  // Toggle: HIGH = knob tunes TX, LOW = knob tunes RX
 const int LED_COMM_PIN   = 10; // ON while Python is actively sending commands
@@ -78,6 +82,7 @@ volatile int8_t  encAccum = 0;   // accumulator, reset at each detent
 volatile long pendingHz = 0;
 
 
+
 // ── Frequency tracking ────────────────────────────────────────────────────────
 
 // Track if last freq change was manual (not from Arduino knob)
@@ -99,6 +104,14 @@ bool  splitActive     = false;
 long  splitRangeLow   = 0;    // baseFreq + rangeFromKHz * 1000
 long  splitRangeHigh  = 0;    // baseFreq + rangeUpKHz  * 1000
 char  splitTargetVfo  = 'A';  // which VFO the knob was tuning during split
+
+// ── Legal band table ──────────────────────────────────────────────────────────
+// Sent once by Python at startup from legalHFfreq.txt.
+// Arduino looks up the current band in pollFreqSend and clamps accordingly.
+#define MAX_BANDS 16
+long  bandLow[MAX_BANDS];
+long  bandHigh[MAX_BANDS];
+int   bandCount = 0;
 
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
@@ -137,9 +150,22 @@ bool externalFreqB = false;
 
 long lastLcdFreqA = -1;
 long lastLcdFreqB = -1;
+long lastRangeFromKHz = -1;
+long lastRangeUpKHz   = -1;
+long lastStepHz       = -1;
+bool lastEditing      = false;
+bool lastSplitActive  = false;
 
 bool snapPendingA = false;
 bool snapPendingB = false;
+
+// Pending band-change confirmation — cross-band LCD_FREQ updates are held
+// until a second consecutive message confirms the new band (corruption guard).
+long pendingFreqA = 0;
+unsigned long pendingFreqATimeMs = 0;
+long pendingFreqB = 0;
+unsigned long pendingFreqBTimeMs = 0;
+#define FREQ_CONFIRM_MS 1500UL
 
 // ── Edit Mode Parameter Selection ────────────────────────────────────────────
 enum EditParam { EDIT_STEP = 0, EDIT_FROM = 1, EDIT_UP = 2 };
@@ -325,11 +351,16 @@ void writeFreqField(int row, long hz) {
 // ── LCD update ────────────────────────────────────────────────────────────────
 
 void updateLcd() {
-  // Always redraw both rows so the knob symbol moves instantly when the toggle changes
+  // Always redraw freq fields — knob symbol must move instantly when toggle changes
   lastLcdFreqA = lcdFreqA;
   lastLcdFreqB = lcdFreqB;
   writeFreqField(0, lcdFreqA);
-  writeFromUpField(rangeFromKHz, rangeUpKHz); // row 0, col 10-15
+  // Only redraw from/up field when values change (avoids flicker)
+  if (rangeFromKHz != lastRangeFromKHz || rangeUpKHz != lastRangeUpKHz) {
+    lastRangeFromKHz = rangeFromKHz;
+    lastRangeUpKHz   = rangeUpKHz;
+    writeFromUpField(rangeFromKHz, rangeUpKHz);
+  }
   writeFreqField(1, lcdFreqB);
   if (splitActive) {
     bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
@@ -337,8 +368,16 @@ void updateLcd() {
     long controlledHz = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
     long frozenHz     = (targetVfo == 'A') ? lcdFreqB : lcdFreqA;
     writeSplitOffsetField(controlledHz - frozenHz);
+    lastSplitActive = true;
   } else {
-    writeStepField(stepHz, uiState == STATE_EDIT);
+    // Only redraw step field when values change, or when just leaving split mode
+    bool editing = (uiState == STATE_EDIT);
+    if (stepHz != lastStepHz || editing != lastEditing || lastSplitActive) {
+      lastStepHz      = stepHz;
+      lastEditing     = editing;
+      lastSplitActive = false;
+      writeStepField(stepHz, editing);
+    }
   }
 }
 
@@ -413,6 +452,14 @@ void sendBanner() {
   lastHelloMs = millis();
 }
 
+// Returns band index if freq is within a known legal band, else -1.
+int bandOf(long freq) {
+  for (int i = 0; i < bandCount; i++) {
+    if (freq >= bandLow[i] && freq <= bandHigh[i]) return i;
+  }
+  return -1;
+}
+
 // ── Command handler ───────────────────────────────────────────────────────────
 
 void handleCommand(const char *line) {
@@ -428,11 +475,49 @@ void handleCommand(const char *line) {
     return;
   }
 
+  // BAND_CLEAR — reset band table (sent before BAND_ADD sequence)
+  if (strcmp(line, "BAND_CLEAR") == 0) {
+    bandCount = 0;
+    return;
+  }
+
+  // BAND_ADD:<low_hz>:<high_hz> — add one band to the table
+  if (strncmp(line, "BAND_ADD:", 9) == 0) {
+    if (bandCount < MAX_BANDS) {
+      char *p = (char *)line + 9;
+      bandLow[bandCount]  = atol(p);
+      p = strchr(p, ':');
+      if (p) bandHigh[bandCount] = atol(++p);
+      bandCount++;
+    }
+    return;
+  }
+
+  // DUMP_BANDS — print the stored band table for diagnostics
+  if (strcmp(line, "DUMP_BANDS") == 0) {
+    ftdiSerial.print("BANDS:"); ftdiSerial.println(bandCount);
+    for (int i = 0; i < bandCount; i++) {
+      ftdiSerial.print("BAND:"); ftdiSerial.print(i);
+      ftdiSerial.print(":"); ftdiSerial.print(bandLow[i]);
+      ftdiSerial.print(":"); ftdiSerial.println(bandHigh[i]);
+    }
+    return;
+  }
+
   // LCD_FREQ:<freqA>:<freqB>:<activeVfo>:<txVfo>
   // Python sends this every refresh cycle with confirmed radio values.
   // Freq values are gated (ignored while knob is active).
   // txVfo is always updated so split mode changes are instant.
   if (strncmp(line, "LCD_FREQ:", 9) == 0) {
+    // Verify checksum if present (*XX at end of line)
+    char *star = strchr(line, '*');
+    if (star != NULL) {
+      uint8_t expected = (uint8_t)strtol(star + 1, NULL, 16);
+      uint8_t computed = 0;
+      for (char *c = line; c < star; c++) computed ^= (uint8_t)*c;
+      if (computed != expected) return;  // corrupted — discard
+      *star = '\0';  // strip checksum before parsing
+    }
     // Save state before update so we can detect split transitions
     long oldFreqA     = lcdFreqA;
     long oldFreqB     = lcdFreqB;
@@ -442,31 +527,93 @@ void handleCommand(const char *line) {
     char *p = (char *)line + 9;
     bool gateOpen = (millis() >= freqTxIgnoreUntilMs);
     long newA = atol(p);
-    // DEBUG: Commented out by Copilot at user request. Uncomment for LCD_FREQ debug info.
-    // Serial.print("DBG LCD_FREQ: newA="); Serial.print(newA);
-    // Serial.print(" gateOpen="); Serial.print(gateOpen ? "Y" : "N");
-    // Serial.print(" lcdFreqA_before="); Serial.println(lcdFreqA);
-    // ftdiSerial.print("DBG:LCD_FREQ newA="); ftdiSerial.print(newA);
-    // ftdiSerial.print(" gate="); ftdiSerial.print(gateOpen ? "Y" : "N");
-    // ftdiSerial.print(" lcdFreqA_was="); ftdiSerial.println(lcdFreqA);
-    if (gateOpen && newA > 0) {
+    // Validate newA: skip update entirely if band table not loaded yet (BAND_CLEAR window).
+    if (bandCount == 0) newA = 0;
+    // Validate newA: require confirmation if crossing into a different legal band.
+    // Out-of-band values are accepted for display — knob snap handles them in pollFreqSend.
+    if (bandCount > 0 && newA > 0) {
+      int newBand = bandOf(newA);
+      if (newBand < 0) {
+        // Out of band — require two consecutive agreeing messages
+        if (pendingFreqA > 0 && bandOf(pendingFreqA) < 0 && abs(pendingFreqA - newA) < 5000L) {
+          pendingFreqA = 0;  // confirmed — accept
+        } else {
+          pendingFreqA = newA;
+          pendingFreqATimeMs = millis();
+          newA = 0;  // hold until confirmed
+        }
+      } else {
+        int curBand = bandOf(lcdFreqA);
+        if (lcdFreqA > 0 && curBand >= 0 && curBand != newBand) {
+          // Different band — require one confirming message
+          if (pendingFreqA > 0 && bandOf(pendingFreqA) == newBand) {
+            pendingFreqA = 0;  // confirmed — accept
+          } else {
+            pendingFreqA = newA;
+            pendingFreqATimeMs = millis();
+            newA = 0;  // not yet confirmed — skip update
+          }
+        } else {
+          pendingFreqA = 0;  // same band or uninitialized — accept immediately
+        }
+      }
+    }
+    // Band change: bypass gate — a >1 MHz jump is never a tuning step, always a band switch.
+    // Also clear any accumulated encoder delta so the knob starts fresh on the new band.
+    bool isBandChange = (lcdFreqA > 0 && newA > 0 && abs(newA - lcdFreqA) > 1000000L);
+    if (isBandChange) {
+      freqTxIgnoreUntilMs = 0;  // open gate immediately
+      ENC_PAUSE();
+      pendingHz = 0;            // discard stale delta from old band
+      ENC_RESUME();
+      gateOpen = true;
+    }
+    if ((gateOpen) && newA > 0) {
       if (lcdFreqA != newA) {
         // Mark as external/manual change — snap on next encoder click
         externalFreqA = true;
         snapPendingA = true;
       }
-      lcdFreqA = newA;
+      ENC_PAUSE(); lcdFreqA = newA; ENC_RESUME();
     }
     p = strchr(p, ':');
     if (p) {
       long newB = atol(++p);
+      // Validate newB: same rules as newA.
+      if (bandCount == 0) newB = 0;
+      if (bandCount > 0 && newB > 0) {
+        int newBand = bandOf(newB);
+        if (newBand < 0) {
+          // Out of band — require two consecutive agreeing messages
+          if (pendingFreqB > 0 && bandOf(pendingFreqB) < 0 && abs(pendingFreqB - newB) < 5000L) {
+            pendingFreqB = 0;  // confirmed — accept
+          } else {
+            pendingFreqB = newB;
+            pendingFreqBTimeMs = millis();
+            newB = 0;  // hold until confirmed
+          }
+        } else {
+          int curBand = bandOf(lcdFreqB);
+          if (lcdFreqB > 0 && curBand >= 0 && curBand != newBand) {
+            if (pendingFreqB > 0 && bandOf(pendingFreqB) == newBand) {
+              pendingFreqB = 0;  // confirmed — accept
+            } else {
+              pendingFreqB = newB;
+              pendingFreqBTimeMs = millis();
+              newB = 0;  // not yet confirmed — skip update
+            }
+          } else {
+            pendingFreqB = 0;
+          }
+        }
+      }
       if (gateOpen && newB > 0) {
         if (lcdFreqB != newB) {
           // Mark as external/manual change — snap on next encoder click
           externalFreqB = true;
           snapPendingB = true;
         }
-        lcdFreqB = newB;
+        ENC_PAUSE(); lcdFreqB = newB; ENC_RESUME();
       }
       p = strchr(p, ':');
       if (p) {
@@ -566,32 +713,76 @@ void pollFtdi() {
 
 void pollFreqSend() {
   // Atomic snapshot of ISR-written pendingHz.
-  noInterrupts();
+  ENC_PAUSE();
   long pk = pendingHz;
-  interrupts();
+  ENC_RESUME();
 
-  if (pk != 0 || pendingHz != 0) {
-    Serial.print("[pollFreqSend] pk="); Serial.print(pk); Serial.print(" pendingHz="); Serial.println(pendingHz);
-  }
   if (pk == 0 || uiState == STATE_EDIT) return;
 
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
   char targetVfo      = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
   long baseFreq       = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
+  //Serial.print("pk="); Serial.print(pk); Serial.print(" base="); Serial.print(baseFreq); Serial.print(" cnt="); Serial.println(bandCount);
 
   if (baseFreq > 0) {
+    if (bandCount == 0) { ENC_PAUSE(); pendingHz = 0; ENC_RESUME(); return; }
+    int baseBand = bandOf(baseFreq);
+    if (baseBand < 0) {
+      // ── VIP snap ─────────────────────────────────────────────────────────────
+      // baseFreq is outside all legal bands. First knob click snaps to the
+      // nearest band edge in the direction of turn.
+      long snapFreq = 0;
+      if (pk > 0) {
+        // Going up: lower edge of the nearest band above baseFreq
+        long bestDist = -1;
+        for (int i = 0; i < bandCount; i++) {
+          if (bandLow[i] > baseFreq) {
+            long dist = bandLow[i] - baseFreq;
+            if (bestDist < 0 || dist < bestDist) { bestDist = dist; snapFreq = bandLow[i]; }
+          }
+        }
+      } else {
+        // Going down: upper edge of the nearest band below baseFreq
+        long bestDist = -1;
+        for (int i = 0; i < bandCount; i++) {
+          if (bandHigh[i] < baseFreq) {
+            long dist = baseFreq - bandHigh[i];
+            if (bestDist < 0 || dist < bestDist) { bestDist = dist; snapFreq = bandHigh[i]; }
+          }
+        }
+      }
+      if (snapFreq > 0) {
+        ftdiSerial.print("SET_FREQ:"); ftdiSerial.print(snapFreq);
+        ftdiSerial.print(":"); ftdiSerial.println(targetVfo);
+        freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
+        if (targetVfo == 'B') {
+          ENC_PAUSE(); lcdFreqB = snapFreq; lastLcdFreqB = snapFreq; ENC_RESUME();
+          writeFreqField(1, snapFreq);
+        } else {
+          ENC_PAUSE(); lcdFreqA = snapFreq; lastLcdFreqA = snapFreq; ENC_RESUME();
+          writeFreqField(0, snapFreq);
+        }
+      }
+      ENC_PAUSE(); pendingHz = 0; ENC_RESUME();
+      return;
+    }
     long newFreq = baseFreq + pk;
+    // Discard if step is physically impossible (corruption guard: max 15 clicks per poll)
+    if (abs(newFreq - baseFreq) > 15 * stepHz) {
+      ENC_PAUSE(); pendingHz = 0; ENC_RESUME();
+      return;
+    }
     // Clamp to split range when active
     if (splitActive && splitRangeLow > 0 && splitRangeHigh > 0) {
       if (newFreq < splitRangeLow)  newFreq = splitRangeLow;
       if (newFreq > splitRangeHigh) newFreq = splitRangeHigh;
     }
-    Serial.print("DBG pollFreqSend: baseFreq="); Serial.print(baseFreq);
-    Serial.print(" pk="); Serial.print(pk);
-    Serial.print(" newFreq="); Serial.println(newFreq);
-    ftdiSerial.print("DBG:baseFreq="); ftdiSerial.print(baseFreq);
-    ftdiSerial.print(" pk="); ftdiSerial.print(pk);
-    ftdiSerial.print(" newFreq="); ftdiSerial.println(newFreq);
+    // Clamp newFreq to the band that baseFreq is in
+    if (baseBand >= 0) {
+      if (newFreq < bandLow[baseBand])  newFreq = bandLow[baseBand];
+      if (newFreq > bandHigh[baseBand]) newFreq = bandHigh[baseBand];
+    }
+    //Serial.print(baseFreq); Serial.print('>'); Serial.println(newFreq);
     ftdiSerial.print("SET_FREQ:");
     ftdiSerial.print(newFreq);
     ftdiSerial.print(":");
@@ -599,12 +790,10 @@ void pollFreqSend() {
     freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
     // Update only the target VFO row on the LCD immediately.
     if (targetVfo == 'B') {
-      lcdFreqB = newFreq;
-      lastLcdFreqB = newFreq;
+      ENC_PAUSE(); lcdFreqB = newFreq; lastLcdFreqB = newFreq; ENC_RESUME();
       writeFreqField(1, newFreq);
     } else {
-      lcdFreqA = newFreq;
-      lastLcdFreqA = newFreq;
+      ENC_PAUSE(); lcdFreqA = newFreq; lastLcdFreqA = newFreq; ENC_RESUME();
       writeFreqField(0, newFreq);
     }
     if (splitActive) {
@@ -612,14 +801,12 @@ void pollFreqSend() {
       writeSplitOffsetField(newFreq - frozenHz);
     }
   } else {
-    Serial.println("DBG pollFreqSend: NO_BASE_FREQ (baseFreq=0)");
-    ftdiSerial.println("DBG:NO_BASE_FREQ baseFreq=0");
     ftdiSerial.println("NO_BASE_FREQ");
   }
 
-  noInterrupts();
+  ENC_PAUSE();
   pendingHz = 0;
-  interrupts();
+  ENC_RESUME();
 }
 
 // ── Button ────────────────────────────────────────────────────────────────────
@@ -827,11 +1014,11 @@ void handleEdit() {
 
     // ── Encoder: adjust active parameter ──
     if (stepChanged) {
-      noInterrupts();
+      ENC_PAUSE();
       stepChanged = false;
       int8_t dir = editDirection;
       editDirection = 0;
-      interrupts();
+      ENC_RESUME();
 
       switch (editParam) {
         case EDIT_STEP:
@@ -896,11 +1083,29 @@ void handleEdit() {
   }
 }
 
+bool isAtBandEdge(long freq) {
+  if (bandCount == 0 || freq == 0) return false;
+  for (int i = 0; i < bandCount; i++) {
+    if (freq >= bandLow[i] && freq <= bandHigh[i]) {
+      return (freq == bandLow[i] || freq == bandHigh[i]);
+    }
+  }
+  return false;
+}
+
 void loop() {
-    // Update LEDs based on toggle
+    // Update LEDs: blink active LED at band edge, normal RX/TX indication otherwise
     bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
-    digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
-    digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
+    char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
+    long checkFreq  = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
+    if (isAtBandEdge(checkFreq)) {
+      bool blinkOn = (millis() % 500) < 250;
+      digitalWrite(LED_RX_PIN, (!knobControlsTx && blinkOn) ? HIGH : LOW);
+      digitalWrite(LED_TX_PIN, ( knobControlsTx && blinkOn) ? HIGH : LOW);
+    } else {
+      digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
+      digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
+    }
   switch (uiState) {
     case STATE_ONAIR:
       handleOnAir();
@@ -909,7 +1114,15 @@ void loop() {
       handleEdit();
       break;
   }
-  if (millis() - lastHelloMs >= 1000) {
+  // Expire unconfirmed pending band changes after timeout.
+  if (pendingFreqA > 0 && millis() - pendingFreqATimeMs >= FREQ_CONFIRM_MS) pendingFreqA = 0;
+  if (pendingFreqB > 0 && millis() - pendingFreqBTimeMs >= FREQ_CONFIRM_MS) pendingFreqB = 0;
+
+  if (millis() - lastHelloMs >= 1000 && millis() - lastPythonMsgMs >= COMM_TIMEOUT_MS) {
+    sendBanner();
+  }
+  // If band table not yet received, keep requesting it every second regardless of Python activity
+  if (bandCount == 0 && millis() - lastHelloMs >= 1000) {
     sendBanner();
   }
   digitalWrite(LED_COMM_PIN, (millis() - lastPythonMsgMs < COMM_TIMEOUT_MS) ? HIGH : LOW);
