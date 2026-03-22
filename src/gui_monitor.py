@@ -825,8 +825,12 @@ class RigMonitorWindow:
                 elif line == "NO_BASE_FREQ":
                     _dprint(f"[reader] NO_BASE_FREQ — Arduino has no base frequency yet")
                     self._root.after(0, self._on_no_base_freq)
-                elif line == "BTN:PRESS":
-                    self._root.after(0, self._on_knob_button_press)
+                elif line == "SET_SPLIT:ON":
+                    self._root.after(0, lambda: self._on_set_split(True))
+                elif line == "SET_SPLIT:OFF":
+                    self._root.after(0, lambda: self._on_set_split(False))
+                elif line.startswith("DBG:"):
+                    print(f"[ARDUINO] {line}")
 
 
         threading.Thread(target=reader, daemon=True).start()
@@ -1135,10 +1139,12 @@ class RigMonitorWindow:
         self._set_knob_report("Knob turned but no base frequency received yet", ok=False)
         self._knob_status_until = time.monotonic() + 3.0
 
-    def _on_knob_button_press(self) -> None:
-        """Called when the rotary encoder push button is pressed."""
-        # TODO: assign an action to the button press
-        pass
+    def _on_set_split(self, enabled: bool) -> None:
+        """Called when the Arduino button initiates a split ON or OFF."""
+        try:
+            self._rig.set_split_mode(enabled)
+        except Exception as exc:
+            print(f"[_on_set_split] error: {exc}")
 
     def _refresh(self) -> None:
         # Check OmniRig status independently

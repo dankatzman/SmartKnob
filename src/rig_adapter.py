@@ -801,6 +801,29 @@ class RigAdapter:
 		self._state.rf_power = value
 		return self._state.rf_power
 
+	def set_split_mode(self, enabled: bool) -> bool:
+		if self._is_wrapper_backend():
+			if enabled:
+				method = getattr(self._backend, "setSplit", None)
+				if callable(method):
+					try:
+						method(getattr(self._backend, "ON", 1))
+					except Exception:
+						pass
+			else:
+				# omnipyrig setSplit() bug: if(state) is falsy for OFF=0 so the
+				# SPLIT_OFF branch is unreachable. Write Split directly on the COM rig.
+				split_off = getattr(self._backend, "SPLIT_OFF", 0x00010000)
+				rig = getattr(self._backend, "_rig", None)
+				if rig is not None:
+					try:
+						rig.Split = split_off
+					except Exception:
+						pass
+		self._state.split = enabled
+		self._last_wrapper_split = enabled
+		return enabled
+
 	def set_tx(self, enabled: bool) -> bool:
 		if self._is_wrapper_backend():
 			method_name = "setTx" if enabled else "setRx"

@@ -92,6 +92,11 @@ long  splitRangeLow   = 0;    // baseFreq + rangeFromKHz * 1000
 long  splitRangeHigh  = 0;    // baseFreq + rangeUpKHz  * 1000
 char  splitTargetVfo  = 'A';  // which VFO the knob was tuning during split
 
+// Gate: after a button-initiated split change, suppress LCD_FREQ split
+// detection until the radio has caught up (prevents re-triggering).
+unsigned long splitGateMs = 0;
+const unsigned long SPLIT_GATE_MS = 3000;
+
 // ── Legal band table ──────────────────────────────────────────────────────────
 // Sent once by Python at startup from legalHFfreq.txt.
 // Arduino looks up the current band in pollFreqSend and clamps accordingly.
@@ -619,7 +624,11 @@ void handleCommand(const char *line) {
 
     bool isSplit = (txVfo != lcdActiveVfo);
 
-    if (!splitActive && isSplit) {
+    // After a button-initiated split change, suppress detection until the
+    // radio has caught up — prevents the stale LCD_FREQ from re-triggering.
+    if (millis() < splitGateMs) {
+      splitOffCount = 0;
+    } else if (!splitActive && isSplit) {
       splitOffCount = 0; // entering split — reset debounce
       // Split just turned ON — set the target VFO to baseFreq + FROM
       long baseFreq = (oldActiveVfo == 'A') ? oldFreqA : oldFreqB;
@@ -824,7 +833,39 @@ void pollButton() {
   }
   if (sw == HIGH && lastSw == LOW) {
     if (!swWasLongPressed) {
-      Serial.println("BTN:PRESS");
+      if (splitActive) {
+        // ── Button-initiated split OFF ──────────────────────────────────────
+        splitActive    = false;
+        splitRangeLow  = 0;
+        splitRangeHigh = 0;
+        lcd.setCursor(10, 1); lcd.print(' ');
+        splitGateMs = millis() + SPLIT_GATE_MS;
+        Serial.println("SET_SPLIT:OFF");
+        updateLcd();
+      } else {
+        // ── Button-initiated split ON ───────────────────────────────────────
+        char newTxVfo  = (lcdActiveVfo == 'A') ? 'B' : 'A';
+        long baseFreq  = (lcdActiveVfo == 'A') ? lcdFreqA : lcdFreqB;
+        if (baseFreq > 0) {
+          long rawLow    = baseFreq + rangeFromKHz * 1000L;
+          splitRangeLow  = ((rawLow + stepHz / 2) / stepHz) * stepHz;
+          splitRangeHigh = baseFreq + rangeUpKHz * 1000L;
+          splitActive    = true;
+          bool isHunter  = (digitalRead(KNOB_TARGET_SW) == HIGH);
+          char targetVfo = isHunter ? newTxVfo : lcdActiveVfo;
+          splitTargetVfo = targetVfo;
+          splitGateMs    = millis() + SPLIT_GATE_MS;
+          Serial.println("SET_SPLIT:ON");
+          Serial.print("SNAP_FREQ:");
+          Serial.print(splitRangeLow);
+          Serial.print(":");
+          Serial.println(targetVfo);
+          freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
+          if (targetVfo == 'A') { lcdFreqA = splitRangeLow; lastLcdFreqA = splitRangeLow; }
+          else                  { lcdFreqB = splitRangeLow; lastLcdFreqB = splitRangeLow; }
+          updateLcd();
+        }
+      }
     }
     swPressStart = 0;
     swWasLongPressed = false;
@@ -854,6 +895,7 @@ void setup() {
     digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
     digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
   Serial.begin(PC_BAUD);
+  Serial.println("DBG:hardware serial is working");
 
   // Load stepHz from EEPROM (default to 1000 if invalid)
   long eepromStep = 0;
