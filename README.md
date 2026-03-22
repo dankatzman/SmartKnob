@@ -1,101 +1,246 @@
-# OmniPyRig Modular Server
+# SmartKnob — Arduino VFO Controller for Ham Radio
 
-New modular project scaffold for a radio-control bridge using OmniRig + serial transport.
+A hardware rotary encoder knob that connects to your Windows PC and controls your transceiver's VFO frequency in real time, via OmniRig. Includes a 16×2 LCD display, band-edge protection, split-mode support, and a Python GUI monitor window.
 
-## Structure
+Supported radios: **Icom IC-7300**, **Icom IC-7610**, **Yaesu FTDX10**, and any radio supported by OmniRig.
 
-- src/app.py: Entry point
-- src/rig_adapter.py: OmniRig wrapper
-- src/serial_transport.py: Serial scan/connect/read/write helpers
-- src/protocol.py: Command parsing and dispatch
-- radio_profiles.ini: Supported radio models and per-model UI/knob behavior
-- tests/: Test placeholders
+---
 
-## Next Step
+## Features
 
-Implement core command set compatible with your existing Arduino protocol.
+- **Hardware tuning knob** — rotary encoder with quadrature ISR, one step per physical click
+- **16×2 LCD display** — shows VFO A & B frequencies, step size, split offset, and knob indicator
+- **Split mode** — auto-detects RX/TX split, snaps TX frequency to configured offset, shows live offset on display
+- **Band validation** — legal HF amateur band table loaded from file; tuning stops at band edges with blinking LED warning
+- **VIP snap** — if frequency is out-of-band, first knob click snaps to nearest band edge in direction of turn
+- **Persistent settings** — step size (500 Hz / 1 kHz) and split range stored in Arduino EEPROM
+- **Python GUI monitor** — always-on-top window showing radio state, VFO frequencies, split status, and connection health
+- **Auto port detection** — Python finds the Arduino automatically; avoids radio CAT ports
+- **Auto-reconnect** — reconnects automatically if USB is unplugged and re-plugged
+- **XOR checksum** — LCD update packets are checksummed; corrupted packets are silently discarded
+- **Multi-radio profiles** — per-radio configuration in `radio_profiles.ini`
+- **Windows installer** — single EXE built with Nuitka + Inno Setup
 
-## Arduino Serial Protocol (current)
+---
 
-Line-based ASCII, one command per line, `\n` terminated.
+## Hardware
 
-### Arduino Identification
+### Components
 
-To be recognized automatically as the correct knob controller, the Arduino must identify itself with this exact banner:
+| Component | Detail |
+|-----------|--------|
+| Arduino Uno | ATmega328P, communicates via built-in USB |
+| Rotary encoder | Quadrature type with push button (e.g. EC11) |
+| 16×2 I2C LCD | Address 0x27 (or 0x3F), LiquidCrystal_I2C library |
+| Toggle switch | Selects knob target: RX VFO or TX VFO |
+| LEDs | RX indicator (pin 11), TX indicator (pin 12), comm indicator (pin 10) |
+| Decoupling caps | 0.1 µF from encoder CLK and DT pins to GND (hardware debounce) |
 
-- `HELLO_ARDUINO:VFOKNOB`
+### Pin Assignments
 
-Recommended behavior for the Arduino sketch:
+| Pin | Function |
+|-----|----------|
+| 2 (INT0) | Encoder CLK (A phase) |
+| 3 (INT1) | Encoder DT (B phase) |
+| 4 | Encoder push button |
+| 6 | Knob target switch (HIGH = TX, LOW = RX) |
+| 10 | Communication LED (lit when Python is connected) |
+| 11 | RX indicator LED |
+| 12 | TX indicator LED |
+| A4 / A5 | I2C SDA / SCL for LCD |
 
-- Send `HELLO_ARDUINO:VFOKNOB` once on boot after Serial starts
-- If the PC sends `WHO`, reply with `HELLO_ARDUINO:VFOKNOB`
+---
 
-The Python app will only auto-connect to a serial device that presents this banner, so radio CAT COM ports are ignored.
+## LCD Display Layout
 
-## Arduino Sketch
+```
+Col:  0   1─────────9  10──────15
+     ┌───┬──────────┬───────────┐
+R0:  │ ✦ │  7.100.0 │   5- 8   │  ← VFO A freq │ Split range (FROM-UP)
+     ├───┼──────────┼───────────┤
+R1:  │   │ 14.200.0 │     1K   │  ← VFO B freq │ Step size (or split offset)
+     └───┴──────────┴───────────┘
+```
 
-First working sketch:
+- **Col 0**: Knob indicator (custom character) — marks which row the knob is tuning
+- **Col 1–9**: Frequency formatted as `MM.KKK.H` (e.g., ` 7.100.0` = 7.100.0 MHz)
+- **Col 10–15 row 0**: Split range `FROM-UP` in kHz (e.g., ` 5- 8`)
+- **Col 10–15 row 1**: Step size (`   1K` / `  .5K`) or split offset (`+2.0K`) in split mode
 
-- `arduino/vfoKnob_controller/vfoKnob_controller.ino`
-- PlatformIO project root: `arduino/vfoKnob_controller`
-- PlatformIO source file: `arduino/vfoKnob_controller/src/main.cpp`
+---
 
-PlatformIO environments included:
+## Python GUI
 
-- `uno`
-- `nanoatmega328`
+The Python app shows a monitor window with:
 
-If your board is different, change `platformio.ini` before upload.
+- Radio model (IC-7300, IC-7610, FTDX10…)
+- VFO A and VFO B frequencies with dynamic labels (RX/TX color coded)
+- Split mode indicator (YES/NO)
+- VFO route (AA / AB / BA / BB)
+- Knob target (which VFO the hardware knob controls)
+- OmniRig connection status
+- Arduino connection status
 
-Default wiring in the sketch:
+---
 
-- Encoder A -> pin 2
-- Encoder B -> pin 3
-- Encoder push button -> pin 4
-- Status LED -> `LED_BUILTIN`
+## Button Functions
 
-Behavior:
+| Action | Result |
+|--------|--------|
+| Short press (normal mode) | Sends `BTN:PRESS` to Python (configurable action) |
+| Long press (>1 second) | Enters parameter edit mode |
+| Short press (edit mode) | Cycles between STEP / FROM / UP parameters |
+| Long press (edit mode) | Saves parameters to EEPROM, exits edit mode |
+| Knob turn (edit mode) | Adjusts the selected parameter |
 
-- Sends `HELLO_ARDUINO:VFOKNOB` on boot
-- Replies to `WHO` with `HELLO_ARDUINO:VFOKNOB`
-- Rotary encoder sends `STEP:+<hz>` or `STEP:-<hz>`
-- Push button cycles step size through `10, 50, 100, 500, 1000, 2500, 5000 Hz`
+### Editable Parameters
 
-Adjust the pin constants at the top of the sketch if your hardware uses different pins.
+| Parameter | Description | Range |
+|-----------|-------------|-------|
+| STEP | Frequency step per click | 500 Hz / 1 kHz |
+| FROM | Split range lower offset | 1–99 kHz |
+| UP | Split range upper offset | 1–99 kHz |
 
-- `PING` -> `PONG`
-- `WHO` -> `HELLO_PC:vfoStepsKnob`
-- `HELLO` -> `HELLO:vfoStepsKnob:OK`
-- `HELLO_ARDUINO:VFOKNOB` -> `HELLO_PC:vfoStepsKnob:OK`
-- `CAPS` -> comma-separated command capability list
-- `STATUS` -> compact key/value snapshot (`RADIO`, `SPLIT`, `ROUTE`, `KNOB`, `CMD`, `FA`, `FB`, `FCUR`)
-- `RADIO_TYPE` -> current model string from OmniRig
-- `VFO` -> active VFO (`A` or `B`)
-- `FREQ` -> frequency on active VFO
-- `FREQ:A` / `FREQ:B` -> frequency on explicit VFO
-- `KNOB_FREQ` -> `KNOB_FREQ:<A|B>:<hz>`
-- `SET_FREQ:<hz>` -> set frequency on knob-command VFO
-- `SET_FREQ_A:<hz>` / `SET_FREQ_B:<hz>` -> set explicit VFO frequency
-- `STEP:<hz_delta>` -> relative step on knob-command VFO (example: `STEP:+1000`, `STEP:-100`)
-- `STEP_A:<hz_delta>` / `STEP_B:<hz_delta>` -> relative step on explicit VFO
-- `MODE` / `SET_MODE:<value>`
-- `SET_RF_POWER:<0-100>`
-- `TX_ON` / `RX_ON`
+---
 
-Errors are returned as `ERR:<reason>`.
+## Requirements
 
-## Radio Profiles
+### Hardware
+- Arduino Uno (or compatible ATmega328P board)
+- OmniRig installed and configured for your radio
 
-Supported radio models are defined in radio_profiles.ini.
+### Software
+- Windows 10 or later
+- [OmniRig](http://www.dxatlas.com/OmniRig/) (configured for your radio)
+- Python 3.10+ (for running from source)
+- PlatformIO (for flashing the Arduino firmware)
 
-- Add the model name to the [supported_radios] models list
-- Add a matching [radio.MODEL-NAME] section
-- Define per-radio behavior such as knob row, command VFO, and row labels
-- Unknown radios use [radio.DEFAULT] fallback when present
-- In GUI mode, the app shows which profile INI file is active and lets you browse to another file
-- The last selected profile INI file is remembered and reused on next startup
+### Python Dependencies (from source)
+```
+pip install -r requirements.txt
+```
 
-Optional per-radio key:
+---
 
-- split_command_mode = opposite_of_knob_display
-	- When split is ON, software knob sends to the opposite VFO of the knob-frequency row
+## Installation
+
+### Option A — Windows Installer (recommended)
+
+Download `SmartKnobSetup.exe` from the [Releases](../../releases) page and run it.
+The installer places `smartknob.exe` in `C:\Program Files\SmartKnob` and creates a desktop shortcut.
+
+### Option B — From source
+
+```bash
+git clone https://github.com/dankatzman/SmartKnob.git
+cd SmartKnob
+pip install -r requirements.txt
+python vfoKnob.py
+```
+
+### Flashing the Arduino
+
+1. Open the project in VSCode with the PlatformIO extension
+2. Open `arduino/vfoKnob_controller/`
+3. Click the **Upload** arrow in the PlatformIO status bar
+4. After upload completes, the port is free — Python connects automatically
+
+> **Note:** The Arduino communicates via its built-in USB port (hardware serial). No external USB-to-serial adapter is needed.
+
+---
+
+## Configuration
+
+### Radio Profiles (`radio_profiles.ini`)
+
+Each section defines a radio model. The profile is selected automatically based on what OmniRig reports.
+
+```ini
+[IC-7300]
+display_slot_mode = true
+split_command_vfo = opposite
+row_a_label = VFO A
+row_b_label = VFO B
+```
+
+### Legal Bands (`legalHFfreq.txt`)
+
+Defines the amateur HF bands used for band-edge protection. Format:
+
+```
+low_mhz  high_mhz  name
+1.8      2.0       160m
+3.5      4.0       80m
+...
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────┐      USB (hardware serial, 57600 baud)
+│         Python (Windows PC)     │ ◄──────────────────────────────────────►
+│                                 │
+│  vfoKnob.py → app.py            │      OmniRig (COM/CAT)
+│  gui_monitor.py  (Tkinter GUI)  │ ◄──────────────────────────────────────►
+│  rig_adapter.py  (OmniRig)      │                 Radio
+│  serial_transport.py            │
+│  protocol.py                    │
+│  radio_poller.py                │
+└─────────────────────────────────┘
+
+┌─────────────────────────────────┐
+│       Arduino Uno               │
+│                                 │
+│  Rotary encoder (pins 2, 3)     │
+│  Push button   (pin 4)          │
+│  Target switch (pin 6)          │
+│  I2C LCD       (A4, A5)         │
+│  LEDs          (10, 11, 12)     │
+└─────────────────────────────────┘
+```
+
+---
+
+## Serial Protocol
+
+Communication uses newline-terminated ASCII commands at 57600 baud with optional XOR checksum on frequency update packets.
+
+### Key Commands (Python → Arduino)
+
+| Command | Description |
+|---------|-------------|
+| `LCD_FREQ:<A>:<B>:<activeVfo>:<txVfo>*<checksum>` | Update LCD display |
+| `BAND_CLEAR` | Reset band table |
+| `BAND_ADD:<low_hz>:<high_hz>` | Add a legal band |
+| `WHO` | Request identity banner |
+| `PING` | Connectivity check |
+
+### Key Messages (Arduino → Python)
+
+| Message | Description |
+|---------|-------------|
+| `HELLO_ARDUINO:VFOKNOB` | Boot banner / identity |
+| `SET_FREQ:<hz>:<vfo>` | Frequency change from knob |
+| `SNAP_FREQ:<hz>:<vfo>` | Snap request (split mode) |
+| `BTN:PRESS` | Button press event |
+| `PONG_ARDUINO` | Response to PING |
+
+---
+
+## Building the Installer
+
+Requires [Nuitka](https://nuitka.net/) and [Inno Setup](https://jrsoftware.org/isinfo.php).
+
+```bat
+build_installer.bat
+```
+
+Output: `dist/SmartKnobSetup.exe`
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
