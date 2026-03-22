@@ -2,12 +2,6 @@
 #define LED_TX_PIN 12
 
 #include <Arduino.h>
-#include <SoftwareSerial.h>
-
-// Track if last freq change was manual (not from Arduino knob)
-#include <Arduino.h>
-#include <SoftwareSerial.h>
-
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <string.h>
@@ -23,16 +17,9 @@ volatile UiState uiState = STATE_ONAIR;
 // ── Blinking for step edit mode ──
 unsigned long lastBlinkMs = 0;
 bool stepFieldVisible = true;
-#include <Arduino.h>
-#include <SoftwareSerial.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
-#include <string.h>
 
-// SoftwareSerial on pins 8/9 — FTDI232 USB adapter — Python communication
-// Wiring: FTDI TX → pin 8, FTDI RX → pin 9, FTDI GND → GND
-const unsigned long FTDI_BAUD = 57600;
-SoftwareSerial ftdiSerial(8, 9);  // RX=pin8, TX=pin9
+// Hardware serial (USB) — Python communication
+const unsigned long PC_BAUD = 57600;
 
 // I2C LCD 16×2 — address 0x27 (try 0x3F if display stays blank)
 // Wiring: SDA → A4, SCL → A5, VCC → 5V, GND → GND
@@ -43,7 +30,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 const int ENC_CLK = 2;  // CLK (A) — INT0
 const int ENC_DT  = 3;  // DT  (B) — INT1
 
-// Pause/resume only the encoder interrupts (INT0/INT1), leaving SoftwareSerial PCINT running.
+// Pause/resume encoder interrupts (INT0/INT1) during critical sections.
 #define ENC_PAUSE()  do { detachInterrupt(digitalPinToInterrupt(ENC_CLK)); detachInterrupt(digitalPinToInterrupt(ENC_DT)); } while(0)
 #define ENC_RESUME() do { attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, CHANGE); attachInterrupt(digitalPinToInterrupt(ENC_DT), encoderISR, CHANGE); } while(0)
 const int ENC_SW  = 6;  // Push button
@@ -448,7 +435,7 @@ void encoderISR() {
 // ── Banner ────────────────────────────────────────────────────────────────────
 
 void sendBanner() {
-  ftdiSerial.println(ARDUINO_BANNER);
+  Serial.println(ARDUINO_BANNER);
   lastHelloMs = millis();
 }
 
@@ -471,7 +458,7 @@ void handleCommand(const char *line) {
   }
 
   if (strcmp(line, "PING") == 0) {
-    ftdiSerial.println("PONG_ARDUINO");
+    Serial.println("PONG_ARDUINO");
     return;
   }
 
@@ -495,11 +482,11 @@ void handleCommand(const char *line) {
 
   // DUMP_BANDS — print the stored band table for diagnostics
   if (strcmp(line, "DUMP_BANDS") == 0) {
-    ftdiSerial.print("BANDS:"); ftdiSerial.println(bandCount);
+    Serial.print("BANDS:"); Serial.println(bandCount);
     for (int i = 0; i < bandCount; i++) {
-      ftdiSerial.print("BAND:"); ftdiSerial.print(i);
-      ftdiSerial.print(":"); ftdiSerial.print(bandLow[i]);
-      ftdiSerial.print(":"); ftdiSerial.println(bandHigh[i]);
+      Serial.print("BAND:"); Serial.print(i);
+      Serial.print(":"); Serial.print(bandLow[i]);
+      Serial.print(":"); Serial.println(bandHigh[i]);
     }
     return;
   }
@@ -645,10 +632,10 @@ void handleCommand(const char *line) {
         bool isHunter  = (digitalRead(KNOB_TARGET_SW) == HIGH);
         char targetVfo = isHunter ? txVfo : lcdActiveVfo;
         splitTargetVfo = targetVfo;
-        ftdiSerial.print("SNAP_FREQ:");
-        ftdiSerial.print(splitRangeLow);
-        ftdiSerial.print(":");
-        ftdiSerial.println(targetVfo);
+        Serial.print("SNAP_FREQ:");
+        Serial.print(splitRangeLow);
+        Serial.print(":");
+        Serial.println(targetVfo);
         freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
         // Update local LCD freq so display is consistent
         if (targetVfo == 'A') { lcdFreqA = splitRangeLow; lastLcdFreqA = splitRangeLow; }
@@ -663,10 +650,10 @@ void handleCommand(const char *line) {
         long curFreq = (splitTargetVfo == 'A') ? lcdFreqA : lcdFreqB;
         if (curFreq > 0 && stepHz > 0) {
           long snapped = ((curFreq + stepHz / 2) / stepHz) * stepHz;
-          ftdiSerial.print("SNAP_FREQ:");
-          ftdiSerial.print(snapped);
-          ftdiSerial.print(":");
-          ftdiSerial.println(splitTargetVfo);
+          Serial.print("SNAP_FREQ:");
+          Serial.print(snapped);
+          Serial.print(":");
+          Serial.println(splitTargetVfo);
           freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
           if (splitTargetVfo == 'A') { lcdFreqA = snapped; lastLcdFreqA = snapped; }
           else                       { lcdFreqB = snapped; lastLcdFreqB = snapped; }
@@ -690,8 +677,8 @@ void handleCommand(const char *line) {
 // ── FTDI serial reader ────────────────────────────────────────────────────────
 
 void pollFtdi() {
-  while (ftdiSerial.available() > 0) {
-    char ch = static_cast<char>(ftdiSerial.read());
+  while (Serial.available() > 0) {
+    char ch = static_cast<char>(Serial.read());
     if (ch == '\r') continue;
     if (ch == '\n') {
       serialLine[serialLineLen] = '\0';
@@ -752,8 +739,8 @@ void pollFreqSend() {
         }
       }
       if (snapFreq > 0) {
-        ftdiSerial.print("SET_FREQ:"); ftdiSerial.print(snapFreq);
-        ftdiSerial.print(":"); ftdiSerial.println(targetVfo);
+        Serial.print("SET_FREQ:"); Serial.print(snapFreq);
+        Serial.print(":"); Serial.println(targetVfo);
         freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
         if (targetVfo == 'B') {
           ENC_PAUSE(); lcdFreqB = snapFreq; lastLcdFreqB = snapFreq; ENC_RESUME();
@@ -783,10 +770,10 @@ void pollFreqSend() {
       if (newFreq > bandHigh[baseBand]) newFreq = bandHigh[baseBand];
     }
     //Serial.print(baseFreq); Serial.print('>'); Serial.println(newFreq);
-    ftdiSerial.print("SET_FREQ:");
-    ftdiSerial.print(newFreq);
-    ftdiSerial.print(":");
-    ftdiSerial.println(targetVfo);
+    Serial.print("SET_FREQ:");
+    Serial.print(newFreq);
+    Serial.print(":");
+    Serial.println(targetVfo);
     freqTxIgnoreUntilMs = millis() + FREQ_TX_IGNORE_MS;
     // Update only the target VFO row on the LCD immediately.
     if (targetVfo == 'B') {
@@ -801,7 +788,7 @@ void pollFreqSend() {
       writeSplitOffsetField(newFreq - frozenHz);
     }
   } else {
-    ftdiSerial.println("NO_BASE_FREQ");
+    Serial.println("NO_BASE_FREQ");
   }
 
   ENC_PAUSE();
@@ -837,7 +824,7 @@ void pollButton() {
   }
   if (sw == HIGH && lastSw == LOW) {
     if (!swWasLongPressed) {
-      ftdiSerial.println("BTN:PRESS");
+      Serial.println("BTN:PRESS");
     }
     swPressStart = 0;
     swWasLongPressed = false;
@@ -866,11 +853,7 @@ void setup() {
     bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
     digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
     digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
-  Serial.begin(115200);
-  // DO NOT REMOVE OR MODIFY THE LINE BELOW!
-  // This message is required for verifying serial monitor operation.
-  Serial.println("Arduino started. Serial is working!");
-  ftdiSerial.begin(FTDI_BAUD);
+  Serial.begin(PC_BAUD);
 
   // Load stepHz from EEPROM (default to 1000 if invalid)
   long eepromStep = 0;
