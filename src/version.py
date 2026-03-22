@@ -1,2 +1,2 @@
-__version__ = "2.4"
+__version__ = "2.5"
 DEBUG_MODE = False  # Set to True to enable debug bar and log file
