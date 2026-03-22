@@ -97,6 +97,11 @@ char  splitTargetVfo  = 'A';  // which VFO the knob was tuning during split
 unsigned long splitGateMs = 0;
 const unsigned long SPLIT_GATE_MS = 3000;
 
+// ── System ready flag ─────────────────────────────────────────────────────────
+// Encoder output is suppressed until both the band table and a valid frequency
+// have been received from Python. Prevents out-of-band jumps at startup.
+bool systemReady = false;
+
 // ── Legal band table ──────────────────────────────────────────────────────────
 // Sent once by Python at startup from legalHFfreq.txt.
 // Arduino looks up the current band in pollFreqSend and clamps accordingly.
@@ -470,6 +475,7 @@ void handleCommand(const char *line) {
   // BAND_CLEAR — reset band table (sent before BAND_ADD sequence)
   if (strcmp(line, "BAND_CLEAR") == 0) {
     bandCount = 0;
+    systemReady = false;
     return;
   }
 
@@ -567,6 +573,12 @@ void handleCommand(const char *line) {
         snapPendingA = true;
       }
       ENC_PAUSE(); lcdFreqA = newA; ENC_RESUME();
+      // Both band table and a valid freq are now in — enable encoder output.
+      // Clear any accumulated pendingHz so startup turns don't fire at once.
+      if (!systemReady && bandCount > 0) {
+        systemReady = true;
+        ENC_PAUSE(); pendingHz = 0; ENC_RESUME();
+      }
     }
     p = strchr(p, ':');
     if (p) {
@@ -713,7 +725,10 @@ void pollFreqSend() {
   long pk = pendingHz;
   ENC_RESUME();
 
-  if (pk == 0 || uiState == STATE_EDIT) return;
+  if (pk == 0 || uiState == STATE_EDIT || !systemReady) {
+    if (!systemReady) { ENC_PAUSE(); pendingHz = 0; ENC_RESUME(); }
+    return;
+  }
 
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
   char targetVfo      = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
