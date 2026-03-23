@@ -50,6 +50,7 @@ unsigned long lastHelloMs = 0;
 // Timestamp of last valid command received from Python (for comm LED)
 unsigned long lastPythonMsgMs = 0;
 const unsigned long COMM_TIMEOUT_MS = 3000;
+bool commConnected = false;   // true while Python is actively connected
 
 // ── Rotary encoder — interrupt-driven quadrature state machine ────────────────
 // Quadrature lookup table.
@@ -255,9 +256,9 @@ void writeFromUpFieldBlink(long fromKHz, long upKHz, bool blinkFrom, bool blinkU
 // Only writeStepField() may write to col 11–15 on row 1.
 void writeStepField(long hz, bool editing = false, bool blinkNumbers = false, bool numbersVisible = true) {
   // Only the numbers blink, 'K' is always visible and right-justified
-  // Always clear the field first (5 chars)
-  lcd.setCursor(11, 1);
-  lcd.print("     ");
+  // Always clear the field first (6 chars — includes col 10 spacer)
+  lcd.setCursor(10, 1);
+  lcd.print("      ");
   if (hz >= 1000) {
     // 1K, right-justified: "   1K"
     if (editing && blinkNumbers && !numbersVisible) {
@@ -1158,12 +1159,31 @@ void loop() {
   if (pendingFreqA > 0 && millis() - pendingFreqATimeMs >= FREQ_CONFIRM_MS) pendingFreqA = 0;
   if (pendingFreqB > 0 && millis() - pendingFreqBTimeMs >= FREQ_CONFIRM_MS) pendingFreqB = 0;
 
-  if (millis() - lastHelloMs >= 1000 && millis() - lastPythonMsgMs >= COMM_TIMEOUT_MS) {
+  bool pythonAlive = (millis() - lastPythonMsgMs < COMM_TIMEOUT_MS);
+  if (!pythonAlive && commConnected) {
+    // Python just disconnected — show "no signal" and reset state
+    commConnected    = false;
+    systemReady      = false;
+    lcdFreqA         = 0;
+    lcdFreqB         = 0;
+    // Force updateLcd() to redraw all fields on reconnect
+    lastRangeFromKHz = -1;
+    lastRangeUpKHz   = -1;
+    lastStepHz       = -1;
+    lastSplitActive  = false;
+    lcd.clear();
+    lcd.setCursor(0, 1);
+    lcd.print("-- NO SIGNAL -- ");
+  }
+  if (!pythonAlive && millis() - lastHelloMs >= 1000) {
     sendBanner();
+  }
+  if (pythonAlive && !commConnected) {
+    commConnected = true;  // Python reconnected; normal LCD_FREQ messages will restore display
   }
   // If band table not yet received, keep requesting it every second regardless of Python activity
   if (bandCount == 0 && millis() - lastHelloMs >= 1000) {
     sendBanner();
   }
-  digitalWrite(LED_COMM_PIN, (millis() - lastPythonMsgMs < COMM_TIMEOUT_MS) ? HIGH : LOW);
+  digitalWrite(LED_COMM_PIN, pythonAlive ? HIGH : LOW);
 }

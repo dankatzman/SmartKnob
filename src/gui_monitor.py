@@ -433,14 +433,18 @@ class RigMonitorWindow:
         def force_freq_refresh(*args):
             if time.monotonic() < self._freq_display_gate_until:
                 return
+            if self._last_omnirig_report == "Not active":
+                self._vfo_a_var.set("---------")
+                self._vfo_b_var.set("---------")
+                return
             try:
                 freq_a = self._rig.get_raw_param("FreqA")
                 freq_b = self._rig.get_raw_param("FreqB")
-                self._vfo_a_var.set(_fmt_hz(freq_a) if freq_a else "N/A")
-                self._vfo_b_var.set(_fmt_hz(freq_b) if freq_b else "N/A")
+                self._vfo_a_var.set(_fmt_hz(freq_a) if freq_a else "---")
+                self._vfo_b_var.set(_fmt_hz(freq_b) if freq_b else "---")
             except Exception:
-                self._vfo_a_var.set("N/A")
-                self._vfo_b_var.set("N/A")
+                self._vfo_a_var.set("---------")
+                self._vfo_b_var.set("---------")
         self._split_var.trace_add('write', force_freq_refresh)
         # self._row(frame, 6, "Current Knob Freq", self._current_freq_var, pady=0)  # Commented out for later use if needed
 
@@ -499,8 +503,8 @@ class RigMonitorWindow:
     def _set_na_values(self) -> None:
         self._freq_fail_count = 0  # Reset fail counter when N/A is set
         self._radio_type_var.set("N/A")
-        self._vfo_a_var.set("N/A")
-        self._vfo_b_var.set("N/A")
+        self._vfo_a_var.set("---------")
+        self._vfo_b_var.set("---------")
         self._current_freq_var.set("N/A")
         self._vfo_route_var.set("N/A")
         self._knob_target_var.set("N/A")
@@ -1195,11 +1199,14 @@ class RigMonitorWindow:
 
         if not omnirig_running or freq_a is None or freq_b is None:
             self._omnirig_fail_count += 1
+            self._freq_fail_count += 1
             if self._omnirig_fail_count >= self._omnirig_fail_threshold:
                 if self._last_omnirig_report != "Not active":
                     self._set_omnirig_report("Not active", ok=False)
                     self._last_omnirig_report = "Not active"
-            self._freq_fail_count += 1
+                # Force "---" every cycle while not active — overrides any stale cache
+                self._vfo_a_var.set("---------")
+                self._vfo_b_var.set("---------")
             if self._freq_fail_count >= self._freq_fail_threshold:
                 self._set_na_values()
         else:

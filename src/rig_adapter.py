@@ -151,6 +151,7 @@ class RigAdapter:
 		self._omnirig_last_check = 0.0
 		self._last_wrapper_split: Optional[bool] = None
 		self._last_simplex_active_vfo: str = self._state.active_vfo
+		self._freq_confirmed: bool = False  # True once OmniRig returns a real non-zero frequency
 		self._profile_ini_path = self._resolve_initial_profile_ini_path(profile_ini_path)
 		self._radio_profile_overrides = _load_radio_profiles(self._profile_ini_path)
 		self._save_last_profile_ini_path(self._profile_ini_path)
@@ -585,21 +586,25 @@ class RigAdapter:
 		if self._is_wrapper_backend():
 			status = self._safe_int(self._get_param("Status"))
 
+			# OmniRig status 4 = OnLine (radio physically responding).
+			# Any other status means the radio is off or not communicating —
+			# return None so the GUI shows "---" and the Arduino stays inactive.
+			if status != 4:
+				self._freq_confirmed = False
+				return None
+
 			f_a = self._safe_int(self._get_param("FreqA"))
 			f_b = self._safe_int(self._get_param("FreqB"))
 
-			# If we got valid frequencies, use them regardless of status.
-			# OmniRig can return cached values (and accept SET commands) even
-			# when status == 3 ("not responding"), so don't gate on status alone.
 			if f_a is not None and f_a > 0:
 				self._state.freq_a_hz = f_a
+				self._freq_confirmed = True
 			if f_b is not None and f_b > 0:
 				self._state.freq_b_hz = f_b
 
-			# Only give up if status is definitively bad AND we have no usable data.
-			if (f_a is None or f_a <= 0) and (f_b is None or f_b <= 0):
-				if status is None or status == 3:
-					return None
+			# Block fallback to RigState defaults until OmniRig has returned real data.
+			if not self._freq_confirmed:
+				return None
 
 			return self._state.freq_a_hz if selected_vfo == "A" else self._state.freq_b_hz
 
