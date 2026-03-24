@@ -811,6 +811,7 @@ class RigMonitorWindow:
                 try:
                     line = t.read_line()
                 except Exception:
+                    self._root.after(0, self._handle_serial_disconnect)
                     break
                 if line is None:
                     continue
@@ -846,6 +847,12 @@ class RigMonitorWindow:
             except Exception:
                 pass
             self._transport = None
+
+    def _handle_serial_disconnect(self) -> None:
+        """Called from the reader thread when a serial error forces it to exit."""
+        self._close_knob_transport()
+        self._last_knob_port = None
+        self._set_knob_report("Knob: disconnected", ok=False)
 
     def _on_knob_port_detected(self, port: str | None, error: str | None) -> None:
         self._probe_running = False
