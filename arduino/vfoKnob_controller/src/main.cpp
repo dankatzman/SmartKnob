@@ -31,8 +31,8 @@ const int ENC_CLK = 2;  // CLK (A) — INT0
 const int ENC_DT  = 3;  // DT  (B) — INT1
 
 // Pause/resume encoder interrupts (INT0/INT1) during critical sections.
-#define ENC_PAUSE()  do { detachInterrupt(digitalPinToInterrupt(ENC_CLK)); detachInterrupt(digitalPinToInterrupt(ENC_DT)); } while(0)
-#define ENC_RESUME() do { attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, CHANGE); attachInterrupt(digitalPinToInterrupt(ENC_DT), encoderISR, CHANGE); } while(0)
+#define ENC_PAUSE()  noInterrupts()
+#define ENC_RESUME() interrupts()
 const int ENC_SW  = 6;  // Push button
 const int KNOB_TARGET_SW = 4;  // Toggle: HIGH = knob tunes TX, LOW = knob tunes RX
 const int LED_COMM_PIN   = 10; // ON while Python is actively sending commands
@@ -63,11 +63,12 @@ const int8_t ENC_TABLE[16] = {
    0,  1, -1,  0
 };
 
-volatile uint8_t encState = 3;   // last quadrature state
-volatile int8_t  encAccum = 0;   // accumulator, reset at each detent
+volatile uint8_t encClkLast = HIGH;
+unsigned long encLastEdgeMs = 0;
 
 // pendingHz is written by the ISR — read atomically in main loop.
 volatile long pendingHz = 0;
+
 
 
 
@@ -111,10 +112,21 @@ long  bandLow[MAX_BANDS];
 long  bandHigh[MAX_BANDS];
 int   bandCount = 0;
 
+// Incoming band buffer — filled by BAND_ADD, compared on BAND_DONE.
+long  incomingBandLow[MAX_BANDS];
+long  incomingBandHigh[MAX_BANDS];
+int   incomingCount = 0;
+bool  incomingActive = false;  // true after first BAND_ADD in this session
+
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
 volatile long stepHz = 1000;  // Hz per encoder click: 1000 = 1 kHz, 500 = 0.5 kHz
 #define EEPROM_STEP_ADDR 0
+#define EEPROM_BAND_MAGIC_ADDR 12   // 2 bytes: 0x5A, 0xA5
+#define EEPROM_BAND_COUNT_ADDR 14   // 1 byte
+#define EEPROM_BAND_DATA_ADDR  15   // MAX_BANDS * 8 bytes (4 low + 4 high)
+#define EEPROM_BAND_MAGIC1 0x5A
+#define EEPROM_BAND_MAGIC2 0xA5
 
 // ── Step Edit Mode State ──
 unsigned long swPressStart = 0;
@@ -384,64 +396,47 @@ void updateLcd() {
 // Direct port read (PIND) instead of digitalRead() for speed.
 // ENC_CLK = pin 2 = PD2, ENC_DT = pin 3 = PD3.
 
+// ISR fires on every rising edge of CLK (RISING mode set in setup).
+// On rising CLK: DT==LOW → CW (up), DT==HIGH → CCW (down).
+// Hardware 0.1µF caps on CLK/DT handle debouncing — no software debounce needed.
 void encoderISR() {
-  uint8_t pins  = PIND;
-  uint8_t state = (((pins >> 2) & 1) << 1) | ((pins >> 3) & 1);
-  if (state == encState) return;
+  int8_t dir = (digitalRead(ENC_DT) == LOW) ? 1 : -1; // 1=CW=up, -1=CCW=down
 
-  encAccum += ENC_TABLE[(encState << 2) | state];
-  encState = state;
+  if (uiState == STATE_EDIT) {
+    editDirection = dir; // 1=up, -1=down
+    stepChanged = true;
+    return;
+  }
 
-  // Only count when encoder returns to its detent (both pins HIGH).
-  // This gives exactly one count per physical click regardless of bounce.
-  if (state == 3) {
-    if (uiState == STATE_EDIT) {
-      if (encAccum >= 2) {
-        editDirection = -1; // CCW = down
-        stepChanged = true;
-      } else if (encAccum <= -2) {
-        editDirection = 1;  // CW = up
-        stepChanged = true;
-      }
-      encAccum = 0;
+  bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
+  char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
+  long baseFreq = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
+  bool *snapPending = (targetVfo == 'A') ? &snapPendingA : &snapPendingB;
+
+  if (dir > 0) { // CW = up
+    if (*snapPending) {
+      long snapped = ((baseFreq + stepHz - 1) / stepHz) * stepHz;
+      long delta = snapped - baseFreq;
+      if (delta == 0) pendingHz += stepHz;
+      else            pendingHz += delta;
+      *snapPending = false;
     } else {
-      // Determine which VFO is being tuned
-      bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
-      char targetVfo = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
-      long baseFreq = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
-      bool *snapPending = (targetVfo == 'A') ? &snapPendingA : &snapPendingB;
-
-      if (encAccum >= 2) { // CCW (down)
-        if (*snapPending) {
-          long snapped = (baseFreq / stepHz) * stepHz;
-          long delta = snapped - baseFreq;
-          if (delta == 0) {
-            pendingHz -= stepHz;
-          } else {
-            pendingHz += delta;
-          }
-          *snapPending = false;
-        } else {
-          pendingHz -= stepHz;
-        }
-      } else if (encAccum <= -2) { // CW (up)
-        if (*snapPending) {
-          long snapped = ((baseFreq + stepHz - 1) / stepHz) * stepHz;
-          long delta = snapped - baseFreq;
-          if (delta == 0) {
-            pendingHz += stepHz;
-          } else {
-            pendingHz += delta;
-          }
-          *snapPending = false;
-        } else {
-          pendingHz += stepHz;
-        }
-      }
-      encAccum = 0;
+      pendingHz += stepHz;
+    }
+  } else { // CCW = down
+    if (*snapPending) {
+      long snapped = (baseFreq / stepHz) * stepHz;
+      long delta = snapped - baseFreq;
+      if (delta == 0) pendingHz -= stepHz;
+      else            pendingHz += delta;
+      *snapPending = false;
+    } else {
+      pendingHz -= stepHz;
     }
   }
 }
+
+void pollEncoder() {} // encoder is now ISR-driven; kept to avoid removing call sites below
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 
@@ -473,33 +468,77 @@ void handleCommand(const char *line) {
     return;
   }
 
-  // BAND_CLEAR — reset band table (sent before BAND_ADD sequence)
-  if (strcmp(line, "BAND_CLEAR") == 0) {
-    bandCount = 0;
-    systemReady = false;
-    return;
-  }
-
-  // BAND_ADD:<low_hz>:<high_hz> — add one band to the table
+  // BAND_ADD:<low_hz>:<high_hz>*CS — collect into incoming buffer
   if (strncmp(line, "BAND_ADD:", 9) == 0) {
-    if (bandCount < MAX_BANDS) {
+    char *star = strchr(line, '*');
+    if (star != NULL) {
+      uint8_t expected = (uint8_t)strtol(star + 1, NULL, 16);
+      uint8_t computed = 0;
+      for (char *c = (char *)line; c < star; c++) computed ^= (uint8_t)*c;
+      if (computed != expected) return;  // corrupted — discard
+      *star = '\0';
+    }
+    if (!incomingActive) {
+      incomingCount = 0;  // reset buffer on first BAND_ADD of this session
+      incomingActive = true;
+    }
+    if (incomingCount < MAX_BANDS) {
       char *p = (char *)line + 9;
-      bandLow[bandCount]  = atol(p);
+      incomingBandLow[incomingCount]  = atol(p);
       p = strchr(p, ':');
-      if (p) bandHigh[bandCount] = atol(++p);
-      bandCount++;
+      if (p) incomingBandHigh[incomingCount] = atol(++p);
+      incomingCount++;
     }
     return;
   }
 
-  // DUMP_BANDS — print the stored band table for diagnostics
-  if (strcmp(line, "DUMP_BANDS") == 0) {
-    Serial.print("BANDS:"); Serial.println(bandCount);
+  // BAND_DONE:<count> — verify count, compare incoming buffer with EEPROM; update if different
+  if (strncmp(line, "BAND_DONE:", 10) == 0) {
+    incomingActive = false;
+    int expectedCount = atoi(line + 10);
+    if (incomingCount != expectedCount) {
+      Serial.print("DBG:BAND_DONE_MISMATCH:got="); Serial.print(incomingCount);
+      Serial.print(":expected="); Serial.println(expectedCount);
+      incomingCount = 0;
+      return;
+    }
+    bool different = (incomingCount != bandCount);
+    if (!different) {
+      for (int i = 0; i < incomingCount; i++) {
+        if (incomingBandLow[i] != bandLow[i] || incomingBandHigh[i] != bandHigh[i]) {
+          different = true;
+          break;
+        }
+      }
+    }
+    if (different) {
+      // Update active table
+      bandCount = incomingCount;
+      for (int i = 0; i < bandCount; i++) {
+        bandLow[i]  = incomingBandLow[i];
+        bandHigh[i] = incomingBandHigh[i];
+      }
+      // Write to EEPROM
+      EEPROM.update(EEPROM_BAND_COUNT_ADDR, (uint8_t)bandCount);
+      for (int i = 0; i < bandCount; i++) {
+        int addr = EEPROM_BAND_DATA_ADDR + i * 8;
+        EEPROM.put(addr,     bandLow[i]);
+        EEPROM.put(addr + 4, bandHigh[i]);
+      }
+      EEPROM.update(EEPROM_BAND_MAGIC_ADDR,     EEPROM_BAND_MAGIC1);
+      EEPROM.update(EEPROM_BAND_MAGIC_ADDR + 1, EEPROM_BAND_MAGIC2);
+      Serial.println("DBG:EEPROM_UPDATED");
+    } else {
+      Serial.println("DBG:EEPROM_SAME");
+    }
+    // Print EEPROM content after compare
+    Serial.print("DBG:EEPROM_BANDS_AFTER:"); Serial.println(bandCount);
     for (int i = 0; i < bandCount; i++) {
-      Serial.print("BAND:"); Serial.print(i);
+      Serial.print("DBG:EEPROM_BAND_AFTER:"); Serial.print(i);
       Serial.print(":"); Serial.print(bandLow[i]);
       Serial.print(":"); Serial.println(bandHigh[i]);
     }
+    if (!systemReady && bandCount > 0) systemReady = true;
     return;
   }
 
@@ -727,14 +766,13 @@ void pollFreqSend() {
   ENC_RESUME();
 
   if (pk == 0 || uiState == STATE_EDIT || !systemReady) {
-    if (!systemReady) { ENC_PAUSE(); pendingHz = 0; ENC_RESUME(); }
+    if (pk != 0 && !systemReady) { ENC_PAUSE(); pendingHz = 0; ENC_RESUME(); }
     return;
   }
 
   bool knobControlsTx = (digitalRead(KNOB_TARGET_SW) == HIGH);
   char targetVfo      = knobControlsTx ? txVfo : (txVfo == 'A' ? 'B' : 'A');
   long baseFreq       = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
-  //Serial.print("pk="); Serial.print(pk); Serial.print(" base="); Serial.print(baseFreq); Serial.print(" cnt="); Serial.println(bandCount);
 
   if (baseFreq > 0) {
     if (bandCount == 0) { ENC_PAUSE(); pendingHz = 0; ENC_RESUME(); return; }
@@ -789,10 +827,20 @@ void pollFreqSend() {
       if (newFreq < splitRangeLow)  newFreq = splitRangeLow;
       if (newFreq > splitRangeHigh) newFreq = splitRangeHigh;
     }
-    // Clamp newFreq to the band that baseFreq is in
+    // Clamp newFreq to the band that baseFreq is in.
+    // When clamped, clear any same-direction pendingHz and set pk=0 so the
+    // end-of-function pendingHz -= pk leaves opposite-direction ISR clicks intact.
     if (baseBand >= 0) {
-      if (newFreq < bandLow[baseBand])  newFreq = bandLow[baseBand];
-      if (newFreq > bandHigh[baseBand]) newFreq = bandHigh[baseBand];
+      if (newFreq < bandLow[baseBand]) {
+        newFreq = bandLow[baseBand];
+        ENC_PAUSE(); if (pendingHz < 0) pendingHz = 0; ENC_RESUME();
+        pk = 0; // mark consumed — don't subtract again at end
+      }
+      if (newFreq > bandHigh[baseBand]) {
+        newFreq = bandHigh[baseBand];
+        ENC_PAUSE(); if (pendingHz > 0) pendingHz = 0; ENC_RESUME();
+        pk = 0; // mark consumed — don't subtract again at end
+      }
     }
     //Serial.print(baseFreq); Serial.print('>'); Serial.println(newFreq);
     Serial.print("SET_FREQ:");
@@ -816,8 +864,10 @@ void pollFreqSend() {
     Serial.println("NO_BASE_FREQ");
   }
 
+  // Subtract only what was processed.  Any ISR clicks that arrived during the
+  // serial print (interrupts enabled) are preserved for the next poll cycle.
   ENC_PAUSE();
-  pendingHz = 0;
+  pendingHz -= pk;
   ENC_RESUME();
 }
 
@@ -839,12 +889,6 @@ void pollButton() {
       lastBlinkMs = now;
       stepFieldVisible = true;
       writeStepField(stepHz, false);
-    } else {
-      // Entering edit mode
-      uiState = STATE_EDIT;
-      lastBlinkMs = now;
-      stepFieldVisible = true;
-      writeStepField(stepHz, true);
     }
   }
   if (sw == HIGH && lastSw == LOW) {
@@ -911,7 +955,6 @@ void setup() {
     digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
     digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
   Serial.begin(PC_BAUD);
-  Serial.println("DBG:hardware serial is working");
 
   // Load stepHz from EEPROM (default to 1000 if invalid)
   long eepromStep = 0;
@@ -920,6 +963,29 @@ void setup() {
     stepHz = eepromStep;
   } else {
     stepHz = 1000;
+  }
+
+  // Load band table from EEPROM if valid
+  if (EEPROM.read(EEPROM_BAND_MAGIC_ADDR) == EEPROM_BAND_MAGIC1 &&
+      EEPROM.read(EEPROM_BAND_MAGIC_ADDR + 1) == EEPROM_BAND_MAGIC2) {
+    uint8_t storedCount = EEPROM.read(EEPROM_BAND_COUNT_ADDR);
+    if (storedCount > 0 && storedCount <= MAX_BANDS) {
+      bandCount = storedCount;
+      int addr = EEPROM_BAND_DATA_ADDR;
+      for (int i = 0; i < bandCount; i++) {
+        EEPROM.get(addr, bandLow[i]);  addr += 4;
+        EEPROM.get(addr, bandHigh[i]); addr += 4;
+      }
+      systemReady = true;
+      Serial.print("DBG:EEPROM_BANDS:"); Serial.println(bandCount);
+      for (int i = 0; i < bandCount; i++) {
+        Serial.print("DBG:EEPROM_BAND:"); Serial.print(i);
+        Serial.print(":"); Serial.print(bandLow[i]);
+        Serial.print(":"); Serial.println(bandHigh[i]);
+      }
+    }
+  } else {
+    Serial.println("DBG:EEPROM_BANDS:virgin");
   }
 
   // Load rangeFromKHz and rangeUpKHz from EEPROM (default to 5 and 10 if invalid)
@@ -955,11 +1021,10 @@ void setup() {
   pinMode(ENC_SW,         INPUT_PULLUP);
   pinMode(KNOB_TARGET_SW, INPUT_PULLUP);
 
-  encState = (digitalRead(ENC_CLK) << 1) | digitalRead(ENC_DT);
+  encClkLast = digitalRead(ENC_CLK);
   lastSw   = digitalRead(ENC_SW);
 
-  attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENC_DT),  encoderISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, RISING);
 
   delay(1200);
   sendBanner();
@@ -968,6 +1033,7 @@ void setup() {
 // ── State Handlers ────────────────────────────────────────────────────────────
 
 void handleOnAir() {
+  pollEncoder();
   pollFreqSend();
   pollButton();
   pollFtdi();
@@ -979,6 +1045,7 @@ void handleOnAir() {
 }
 
 void handleEdit() {
+  pollEncoder();
   pollFtdi();
 
   int sw = digitalRead(ENC_SW);

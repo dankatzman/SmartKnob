@@ -6,7 +6,7 @@ echo.
 
 echo [1/3] Compiling Python to EXE with Nuitka...
 set PYTHONPATH=%~dp0src
-set OUTPUT_DIR=C:\temp\smartknob_build
+set OUTPUT_DIR=%~dp0build
 
 "%~dp0.venv\Scripts\python.exe" -m nuitka ^
     --standalone ^

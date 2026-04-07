@@ -117,7 +117,7 @@ from tkinter import ttk
 from typing import Any
 
 from rig_adapter import RigAdapter, load_legal_bands
-from serial_transport import SerialTransport
+from serial_transport import SerialTransport, omnirig_port_details
 from version import __version__, DEBUG_MODE
 
 # Baud rate for the FTDI232 auxiliary serial port on the Arduino.
@@ -284,6 +284,7 @@ class RigMonitorWindow:
         self._split_var = tk.StringVar(value="-")
         self._omnirig_report_var = tk.StringVar(value="OmniRig: Checking...")
         self._knob_report_var = tk.StringVar(value="Knob: Not connected")
+        self._radio_port_details = omnirig_port_details()
         self._debug_var = tk.StringVar(value="Debug: -")
         self._radio_type_name_label: tk.Label | None = None
         self._radio_type_value_label: tk.Label | None = None
@@ -300,6 +301,7 @@ class RigMonitorWindow:
         self._last_knob_port: str | None = None
         self._probe_running: bool = False
         self._transport: SerialTransport | None = None
+        self._band_table_sent: bool = False
         self._last_freq_send: float = 0.0
         self._freq_send_interval: float = 1.0
         self._freq_fail_count: int = 0
@@ -350,9 +352,17 @@ class RigMonitorWindow:
             if self._window_state_path.exists():
                 with open(self._window_state_path, "r", encoding="utf-8") as f:
                     state = json.load(f)
-                    geom = state.get("geometry")
-                    if geom:
-                        self._root.geometry(geom)
+                    geom = state.get("geometry", "")
+                    m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geom or "")
+                    if m:
+                        width, height, x, y = map(int, m.groups())
+                        self._root.update_idletasks()
+                        sw = self._root.winfo_screenwidth()
+                        sh = self._root.winfo_screenheight()
+                        # Clamp to visible area
+                        x = max(0, min(x, sw - 100))
+                        y = max(0, min(y, sh - 80))
+                        self._root.geometry(f"{width}x{height}+{x}+{y}")
         except Exception:
             pass
 
@@ -456,16 +466,81 @@ class RigMonitorWindow:
 
         # Add horizontal separator (dark line) above OmniRig and Knob report lines
         separator = ttk.Separator(frame, orient="horizontal")
-        separator.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(8, 4))
+        separator.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+
+        status_row = tk.Frame(frame)
+        status_row.grid(row=8, column=0, columnspan=4, sticky="ew")
+
+        # Fixed-height header band for "Rig 1" / "Rig 2" labels (populated after layout via place())
+        rig_header = tk.Frame(status_row, height=13)
+        rig_header.pack(side=tk.TOP, fill=tk.X)
+        rig_header.pack_propagate(False)
+
+        # Main row: OmniRig + Radio + ports all packed left→right
+        main_row = tk.Frame(status_row)
+        main_row.pack(side=tk.TOP, fill=tk.X)
 
         self._omnirig_report_label = tk.Label(
-            frame,
+            main_row,
             textvariable=self._omnirig_report_var,
             fg="#b00020",
             font=("Segoe UI", 11, "bold"),
-            anchor="w",
+            anchor="w", padx=0, pady=0, bd=0,
         )
-        self._omnirig_report_label.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(0, 0))
+        self._omnirig_report_label.pack(side=tk.LEFT)
+
+        tk.Label(main_row, text="Radio:", fg="#0055cc",
+                 font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0).pack(
+                     side=tk.LEFT, padx=(12, 2))
+
+        # port_widget_refs: rig -> list of port Label widgets (for rig-label placement)
+        port_widget_refs: dict[str, list[tk.Label]] = {}
+        # sep_pairs: (last_label_of_rig_before, first_label_of_rig_after) for midpoint placement
+        sep_pairs: list[tuple[tk.Label, tk.Label | None]] = []
+        current_rig = None
+        pending_sep_last: tk.Label | None = None  # last label of rig before the boundary
+        if self._radio_port_details:
+            for port, is_primary, rig in self._radio_port_details:
+                is_first_of_new_rig = current_rig is not None and rig != current_rig
+                if is_first_of_new_rig and port_widget_refs.get(current_rig):
+                    pending_sep_last = port_widget_refs[current_rig][-1]
+                current_rig = rig
+                lbl = tk.Label(main_row, text=port,
+                               fg="#0055cc" if is_primary else "black",
+                               font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0)
+                lbl.pack(side=tk.LEFT, padx=(12 if is_first_of_new_rig else 4, 0))
+                port_widget_refs.setdefault(rig, []).append(lbl)
+                if pending_sep_last is not None:
+                    sep_pairs.append((pending_sep_last, lbl))
+                    pending_sep_last = None
+        else:
+            tk.Label(main_row, text="-", fg="#0055cc",
+                     font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0).pack(side=tk.LEFT)
+
+        # After layout is computed: place rig name labels and full-height red separators
+        def _place_rig_labels(refs=port_widget_refs, hdr=rig_header,
+                               srow=status_row, pairs=sep_pairs):
+            hdr.update_idletasks()  # ensure geometry is computed before measuring
+            total_h = srow.winfo_height()
+            # Rig name labels centered above their port groups
+            for rig, labels in refs.items():
+                if not labels:
+                    continue
+                x1 = labels[0].winfo_rootx() - hdr.winfo_rootx()
+                x2 = labels[-1].winfo_rootx() + labels[-1].winfo_width() - hdr.winfo_rootx()
+                cx = (x1 + x2) // 2
+                rig_text = "Rig 1" if rig == "RIG1" else "Rig 2"
+                tk.Label(hdr, text=rig_text, fg="#0055cc",
+                         font=("Segoe UI", 8), padx=0, pady=0, bd=0).place(
+                             x=cx, y=0, anchor="n")
+            # Full-height red separator lines — midpoint between last port of rig N and first of rig N+1
+            for last_lbl, first_lbl in pairs:
+                right_edge = last_lbl.winfo_rootx() + last_lbl.winfo_width() - srow.winfo_rootx()
+                left_edge  = first_lbl.winfo_rootx() - srow.winfo_rootx()
+                mx = (right_edge + left_edge) // 2
+                tk.Frame(srow, width=2, height=total_h, bg="red").place(x=mx, y=0)
+
+        frame.after(200, _place_rig_labels)
 
         self._knob_report_label = tk.Label(
             frame,
@@ -765,6 +840,7 @@ class RigMonitorWindow:
             probe_errors: list[str] = []
             found_port: str | None = None
             for port in SerialTransport.candidate_ports():
+                print(f"[probe] trying {port}")
                 matched, detail = SerialTransport.probe_device_identity_details(port, baudrate=_KNOB_BAUD)
                 if matched:
                     found_port = port
@@ -787,7 +863,6 @@ class RigMonitorWindow:
             t.open(port, baudrate=_KNOB_BAUD)
             self._transport = t
             self._last_freq_send = time.monotonic()
-            self._send_band_table_to_arduino()
             self._start_knob_reader()
         except Exception:
             self._transport = None
@@ -796,9 +871,26 @@ class RigMonitorWindow:
         """Send the full legal band table to the Arduino once on connect/reconnect."""
         if self._transport is None or not self._transport.is_connected:
             return
-        self._transport.write_line("BAND_CLEAR")
-        for low, high, _ in self._legal_bands:
-            self._transport.write_line(f"BAND_ADD:{low}:{high}")
+        if self._band_table_sent:
+            print("[BANDS] already sent — skipping")
+            return
+        self._band_table_sent = True
+        try:
+            self._transport.write_line("")  # flush any partial bytes left by probe
+            time.sleep(0.05)
+            print(f"[BANDS] sending {len(self._legal_bands)} bands")
+            for i, (low, high, _) in enumerate(self._legal_bands):
+                msg = f"BAND_ADD:{low}:{high}"
+                cs = 0
+                for c in msg:
+                    cs ^= ord(c)
+                self._transport.write_line(f"{msg}*{cs:02X}")
+                print(f"[BANDS] sent BAND_ADD {i}: {low}:{high}")
+                time.sleep(0.1)
+            self._transport.write_line(f"BAND_DONE:{len(self._legal_bands)}")
+            print(f"[BANDS] sent BAND_DONE:{len(self._legal_bands)}")
+        except Exception as e:
+            print(f"[BANDS] ERROR: {e}")
 
 
     def _start_knob_reader(self) -> None:
@@ -818,10 +910,10 @@ class RigMonitorWindow:
                 if not line.startswith("HELLO_ARDUINO"):
                     _dprint(f"[reader] received: {repr(line)}")
                 if line.startswith("HELLO_ARDUINO"):
-                    self._root.after(0, self._send_band_table_to_arduino)
+                    print("[BANDS] HELLO_ARDUINO received")
+                    self._send_band_table_to_arduino()
                 elif line.startswith("SET_FREQ:"):
                     payload = line[9:]
-                    #print(f"[SET_FREQ] {payload}")
                     self._root.after(0, lambda p=payload: self._on_set_freq(p))
                 elif line.startswith("SNAP_FREQ:"):
                     payload = line[10:]
@@ -836,6 +928,8 @@ class RigMonitorWindow:
                     self._root.after(0, lambda: self._on_set_split(False))
                 elif line.startswith("DBG:"):
                     print(f"[ARDUINO] {line}")
+                elif line.startswith("BANDS:") or line.startswith("BAND:"):
+                    print(f"[BANDS] {line}")
 
 
         threading.Thread(target=reader, daemon=True).start()
@@ -847,6 +941,7 @@ class RigMonitorWindow:
             except Exception:
                 pass
             self._transport = None
+        self._band_table_sent = False
 
     def _handle_serial_disconnect(self) -> None:
         """Called from the reader thread when a serial error forces it to exit."""

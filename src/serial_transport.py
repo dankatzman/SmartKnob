@@ -5,8 +5,98 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+import threading
 import serial
 from serial.tools import list_ports
+
+
+_omnirig_details_cache: list[tuple[str, bool]] | None = None  # (port, is_primary)
+
+
+def _build_omnirig_details() -> list[tuple[str, bool, str]]:
+    """Scan OmniRig.ini and USB siblings. Returns ordered list of (port, is_primary, rig).
+    is_primary=True  → OmniRig configured port (shown in blue)
+    is_primary=False → sibling port same USB device (shown in black)
+    rig → "RIG1" or "RIG2"
+    Order: RIG1 primary, RIG1 siblings, RIG2 primary, RIG2 siblings."""
+    import configparser
+    import os
+
+    # Step 1: read primary ports per rig from OmniRig.ini
+    rig_ports: list[tuple[str, str]] = []  # (port, rig_name)
+    appdata = os.environ.get("APPDATA", "")
+    ini_candidates = [
+        os.path.join(appdata, "Afreet", "Products", "OmniRig", "OmniRig.ini"),
+        os.path.join(appdata, "Afreet", "OmniRig", "OmniRig.ini"),
+    ]
+    for ini_path in ini_candidates:
+        if not os.path.exists(ini_path):
+            continue
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(ini_path, encoding="utf-8")
+            for section in ("RIG1", "RIG2"):
+                if parser.has_section(section):
+                    port = parser.get(section, "Port", fallback="").strip()
+                    if port:
+                        com_port = port if port.upper().startswith("COM") else f"COM{port}"
+                        rig_ports.append((com_port.upper(), section))
+                        print(f"[probe] OmniRig {section} uses {com_port} — excluded from Arduino scan")
+        except Exception:
+            pass
+        break
+
+    # Step 2: for each primary port, find USB sibling ports (same VID/PID)
+    result: list[tuple[str, bool, str]] = []
+    seen: set[str] = set()
+    try:
+        all_com = list(list_ports.comports())
+        vidpid_to_ports: dict[str, list[str]] = {}
+        for info in all_com:
+            vid = getattr(info, 'vid', None)
+            pid = getattr(info, 'pid', None)
+            if vid is not None and pid is not None:
+                key = f"{vid:04X}:{pid:04X}"
+                vidpid_to_ports.setdefault(key, []).append(info.device.upper())
+
+        for primary_port, rig_name in rig_ports:
+            if primary_port in seen:
+                continue
+            seen.add(primary_port)
+            result.append((primary_port, True, rig_name))
+            # find siblings
+            for info in all_com:
+                vid = getattr(info, 'vid', None)
+                pid = getattr(info, 'pid', None)
+                if vid is None or pid is None:
+                    continue
+                if info.device.upper() == primary_port:
+                    key = f"{vid:04X}:{pid:04X}"
+                    for sibling in vidpid_to_ports.get(key, []):
+                        if sibling not in seen:
+                            seen.add(sibling)
+                            result.append((sibling, False, rig_name))
+                            print(f"[probe] {sibling} shares USB device with radio — excluded from Arduino scan")
+    except Exception:
+        for primary_port, rig_name in rig_ports:
+            if primary_port not in seen:
+                seen.add(primary_port)
+                result.append((primary_port, True, rig_name))
+
+    return result
+
+
+def omnirig_port_details() -> list[tuple[str, bool, str]]:
+    """Return cached ordered list of (port, is_primary, rig) for display and exclusion."""
+    global _omnirig_details_cache
+    if _omnirig_details_cache is None:
+        _omnirig_details_cache = _build_omnirig_details()
+    return _omnirig_details_cache
+
+
+def omnirig_ports() -> set[str]:
+    """Return set of all radio COM ports to exclude from Arduino probe scan."""
+    return {port for port, _, _rig in omnirig_port_details()}
 
 
 ARDUINO_ID_BANNER = "HELLO_ARDUINO:VFOKNOB"
@@ -42,6 +132,7 @@ class SerialTransport:
 
 	def __init__(self) -> None:
 		self._ser: Optional[serial.Serial] = None
+		self._lock = threading.Lock()
 
 	@property
 	def is_connected(self) -> bool:
@@ -67,7 +158,9 @@ class SerialTransport:
 		if not ports:
 			return []
 
-		scored = [(_score_port(info), info.device) for info in ports]
+		excluded = omnirig_ports()
+		scored = [(_score_port(info), info.device) for info in ports
+				  if info.device.upper() not in excluded]
 		scored.sort(key=lambda item: item[0], reverse=True)
 		return [device for _, device in scored]
 
@@ -131,4 +224,6 @@ class SerialTransport:
 		if not self.is_connected or self._ser is None:
 			raise RuntimeError("Serial link is not connected")
 		payload = (line.rstrip("\r\n") + "\n").encode("utf-8")
-		self._ser.write(payload)
+		with self._lock:
+			self._ser.write(payload)
+			self._ser.flush()
