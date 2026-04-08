@@ -454,6 +454,23 @@ int bandOf(long freq) {
   return -1;
 }
 
+// Compute split range from baseFreq, clamped to the legal band.
+// splitRangeLow  = baseFreq + FROM, clamped to [bandLow, bandHigh]
+// splitRangeHigh = baseFreq + UP,   clamped to [splitRangeLow, bandHigh]
+void calcSplitRange(long baseFreq, long &outLow, long &outHigh) {
+  long rawLow  = baseFreq + rangeFromKHz * 1000L;
+  long rawHigh = baseFreq + rangeUpKHz   * 1000L;
+  int  band    = bandOf(baseFreq);
+  if (band >= 0) {
+    if (rawLow  > bandHigh[band]) rawLow  = bandHigh[band];
+    if (rawLow  < bandLow[band])  rawLow  = bandLow[band];
+    if (rawHigh > bandHigh[band]) rawHigh = bandHigh[band];
+    if (rawHigh < rawLow)         rawHigh = rawLow;
+  }
+  outLow  = ((rawLow + stepHz / 2) / stepHz) * stepHz; // snap to nearest step
+  outHigh = rawHigh;
+}
+
 // ── Command handler ───────────────────────────────────────────────────────────
 
 void handleCommand(const char *line) {
@@ -689,9 +706,7 @@ void handleCommand(const char *line) {
       // Split just turned ON — set the target VFO to baseFreq + FROM
       long baseFreq = (oldActiveVfo == 'A') ? oldFreqA : oldFreqB;
       if (baseFreq > 0) {
-        long rawLow    = baseFreq + rangeFromKHz * 1000L;
-        splitRangeLow  = ((rawLow + stepHz / 2) / stepHz) * stepHz; // snap to nearest step
-        splitRangeHigh = baseFreq + rangeUpKHz * 1000L;
+        calcSplitRange(baseFreq, splitRangeLow, splitRangeHigh);
         splitActive    = true;
         // Hunter: KNOB_TARGET_SW HIGH → tune TX; Fox: LOW → tune RX
         bool isHunter  = (digitalRead(KNOB_TARGET_SW) == HIGH);
@@ -911,9 +926,7 @@ void pollButton() {
         char newTxVfo  = (lcdActiveVfo == 'A') ? 'B' : 'A';
         long baseFreq  = (lcdActiveVfo == 'A') ? lcdFreqA : lcdFreqB;
         if (baseFreq > 0) {
-          long rawLow    = baseFreq + rangeFromKHz * 1000L;
-          splitRangeLow  = ((rawLow + stepHz / 2) / stepHz) * stepHz;
-          splitRangeHigh = baseFreq + rangeUpKHz * 1000L;
+          calcSplitRange(baseFreq, splitRangeLow, splitRangeHigh);
           splitActive    = true;
           bool isHunter  = (digitalRead(KNOB_TARGET_SW) == HIGH);
           char targetVfo = isHunter ? newTxVfo : lcdActiveVfo;
