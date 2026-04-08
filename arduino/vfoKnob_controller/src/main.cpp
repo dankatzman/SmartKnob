@@ -402,7 +402,7 @@ void updateLcd() {
 // On rising CLK: DT==LOW → CW (up), DT==HIGH → CCW (down).
 // Hardware 0.1µF caps on CLK/DT handle debouncing — no software debounce needed.
 void encoderISR() {
-  int8_t dir = (digitalRead(ENC_DT) == LOW) ? 1 : -1; // 1=CW=up, -1=CCW=down
+  int8_t dir = (digitalRead(ENC_DT) == HIGH) ? 1 : -1; // 1=CW=up, -1=CCW=down
 
   if (uiState == STATE_EDIT) {
     editDirection = dir; // 1=up, -1=down
@@ -904,11 +904,23 @@ void pollButton() {
     // Long press detected
     swWasLongPressed = true;
     if (uiState == STATE_EDIT) {
-      // Exiting edit mode: restore normal display
+      // Exiting edit mode: save and restore normal display
+      long stepHzCopy2 = stepHz;
+      EEPROM.put(EEPROM_STEP_ADDR, stepHzCopy2);
+      EEPROM.put(EEPROM_FROM_ADDR, rangeFromKHz);
+      EEPROM.put(EEPROM_UP_ADDR, rangeUpKHz);
       uiState = STATE_ONAIR;
       lastBlinkMs = now;
       stepFieldVisible = true;
+      lastRangeFromKHz = -1; // force FROM/UP field redraw
+      lastRangeUpKHz   = -1;
+      lastStepHz       = -1; // force step field redraw
+      lastEditing      = false;
+      writeFromUpField(rangeFromKHz, rangeUpKHz);
       writeStepField(stepHz, false);
+      updateLcd();
+      swWasLongPressed = true; // prevent release being treated as short press
+      lastSw = LOW;            // sync pollButton()'s lastSw so release is handled correctly
     } else if (uiState == STATE_ONAIR && !splitActive) {
       // Entering edit mode
       uiState = STATE_EDIT;
@@ -1119,8 +1131,13 @@ void handleEdit() {
       uiState = STATE_ONAIR;
       lastBlinkMs = now;
       stepFieldVisible = true;
+      lastRangeFromKHz = -1;
+      lastRangeUpKHz   = -1;
+      lastStepHz       = -1;
+      lastEditing      = false;
+      writeFromUpField(rangeFromKHz, rangeUpKHz);
       writeStepField(stepHz, false);
-      updateLcd(); // restore wheel icon
+      updateLcd();
       firstEditFrame = true;
       return;
     }
