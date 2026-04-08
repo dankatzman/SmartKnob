@@ -152,7 +152,8 @@ int lastSw = HIGH;
 long lcdFreqA = 0;
 long lcdFreqB = 0;
 char lcdActiveVfo = 'A';
-char txVfo = 'A';    // which VFO is TX — updated from LCD_FREQ every cycle
+char txVfo = 'A';       // which VFO is TX — updated from LCD_FREQ every cycle
+bool pythonSplit = false; // explicit split flag from Python — more reliable than VFO inference
 
 // Track if last freq change was external (manual)
 bool externalFreqA = false;
@@ -527,25 +528,25 @@ void handleCommand(const char *line) {
       }
       EEPROM.update(EEPROM_BAND_MAGIC_ADDR,     EEPROM_BAND_MAGIC1);
       EEPROM.update(EEPROM_BAND_MAGIC_ADDR + 1, EEPROM_BAND_MAGIC2);
-      Serial.println("DBG:EEPROM_UPDATED");
+      //Serial.println("DBG:EEPROM_UPDATED");
     } else {
-      Serial.println("DBG:EEPROM_SAME");
+      //Serial.println("DBG:EEPROM_SAME");
     }
-    // Print EEPROM content after compare
-    Serial.print("DBG:EEPROM_BANDS_AFTER:"); Serial.println(bandCount);
-    for (int i = 0; i < bandCount; i++) {
-      Serial.print("DBG:EEPROM_BAND_AFTER:"); Serial.print(i);
-      Serial.print(":"); Serial.print(bandLow[i]);
-      Serial.print(":"); Serial.println(bandHigh[i]);
-    }
+    //Serial.print("DBG:EEPROM_BANDS_AFTER:"); Serial.println(bandCount);
+    //for (int i = 0; i < bandCount; i++) {
+    //  Serial.print("DBG:EEPROM_BAND_AFTER:"); Serial.print(i);
+    //  Serial.print(":"); Serial.print(bandLow[i]);
+    //  Serial.print(":"); Serial.println(bandHigh[i]);
+    //}
     if (!systemReady && bandCount > 0) systemReady = true;
     return;
   }
 
-  // LCD_FREQ:<freqA>:<freqB>:<activeVfo>:<txVfo>
+  // LCD_FREQ:<freqA>:<freqB>:<activeVfo>:<txVfo>:<splitFlag>
   // Python sends this every refresh cycle with confirmed radio values.
   // Freq values are gated (ignored while knob is active).
-  // txVfo is always updated so split mode changes are instant.
+  // txVfo and splitFlag are always updated so split mode changes are instant.
+  // splitFlag: 'S' = split ON, 'N' = split OFF (explicit — do not infer from VFOs).
   if (strncmp(line, "LCD_FREQ:", 9) == 0) {
     // Verify checksum if present (*XX at end of line)
     char *star = strchr(line, '*');
@@ -664,17 +665,20 @@ void handleCommand(const char *line) {
         if (gateOpen) lcdActiveVfo = *(++p);
         else ++p;
         p = strchr(p, ':');
-        if (p) txVfo = *(++p);  // always update — no gate
+        if (p) {
+          txVfo = *(++p);  // always update — no gate
+          p = strchr(p, ':');
+          if (p) pythonSplit = (*(++p) == 'S');  // always update — explicit split flag
+        }
       }
     }
 
     // ── Split transition detection ──────────────────────────────────────────
-    // splitOffCount: debounce split-OFF — require 2 consecutive non-split frames
-    // before acting, to ignore brief radio glitches when tuning the TX VFO.
-    // Uses splitActive (not wasSplit) so the counter survives across frames.
+    // splitOffCount: debounce split-OFF — require consecutive non-split frames
+    // before acting, to ignore brief radio glitches.
     static int splitOffCount = 0;
 
-    bool isSplit = (txVfo != lcdActiveVfo);
+    bool isSplit = pythonSplit;  // use explicit flag — VFO inference fails on some radios
 
     // After a button-initiated split change, suppress detection until the
     // radio has caught up — prevents the stale LCD_FREQ from re-triggering.
@@ -977,15 +981,15 @@ void setup() {
         EEPROM.get(addr, bandHigh[i]); addr += 4;
       }
       systemReady = true;
-      Serial.print("DBG:EEPROM_BANDS:"); Serial.println(bandCount);
-      for (int i = 0; i < bandCount; i++) {
-        Serial.print("DBG:EEPROM_BAND:"); Serial.print(i);
-        Serial.print(":"); Serial.print(bandLow[i]);
-        Serial.print(":"); Serial.println(bandHigh[i]);
-      }
+      //Serial.print("DBG:EEPROM_BANDS:"); Serial.println(bandCount);
+      //for (int i = 0; i < bandCount; i++) {
+      //  Serial.print("DBG:EEPROM_BAND:"); Serial.print(i);
+      //  Serial.print(":"); Serial.print(bandLow[i]);
+      //  Serial.print(":"); Serial.println(bandHigh[i]);
+      //}
     }
   } else {
-    Serial.println("DBG:EEPROM_BANDS:virgin");
+    //Serial.println("DBG:EEPROM_BANDS:virgin");
   }
 
   // Load rangeFromKHz and rangeUpKHz from EEPROM (default to 5 and 10 if invalid)

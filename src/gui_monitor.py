@@ -910,7 +910,6 @@ class RigMonitorWindow:
                 if not line.startswith("HELLO_ARDUINO"):
                     _dprint(f"[reader] received: {repr(line)}")
                 if line.startswith("HELLO_ARDUINO"):
-                    print("[BANDS] HELLO_ARDUINO received")
                     self._send_band_table_to_arduino()
                 elif line.startswith("SET_FREQ:"):
                     payload = line[9:]
@@ -1268,8 +1267,10 @@ class RigMonitorWindow:
                 freq_b = self._rig.read_frequency("B")
                 active_vfo = self._rig.get_knob_display_vfo() if hasattr(self._rig, 'get_knob_display_vfo') else "A"
                 tx_vfo = self._rig.get_tx_vfo()
+                split = self._rig.read_split_mode()
+                split_flag = "S" if split else "N"
                 if freq_a and freq_b:
-                    msg = f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}:{tx_vfo}"
+                    msg = f"LCD_FREQ:{freq_a}:{freq_b}:{active_vfo}:{tx_vfo}:{split_flag}"
                     cs = 0
                     for c in msg:
                         cs ^= ord(c)
