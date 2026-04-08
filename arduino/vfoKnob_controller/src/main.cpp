@@ -132,6 +132,7 @@ volatile long stepHz = 1000;  // Hz per encoder click: 1000 = 1 kHz, 500 = 0.5 k
 unsigned long swPressStart = 0;
 bool swWasLongPressed = false;
 volatile bool stepChanged = false; // Set by ISR, handled in main loop
+bool editFirstFrame = true;        // Reset each time edit mode is entered
 
 // ── Button ────────────────────────────────────────────────────────────────────
 
@@ -908,6 +909,10 @@ void pollButton() {
       lastBlinkMs = now;
       stepFieldVisible = true;
       writeStepField(stepHz, false);
+    } else if (uiState == STATE_ONAIR && !splitActive) {
+      // Entering edit mode
+      uiState = STATE_EDIT;
+      editFirstFrame = true;
     }
   }
   if (sw == HIGH && lastSw == LOW) {
@@ -1070,7 +1075,7 @@ void handleEdit() {
   static int lastSw = HIGH;
   static unsigned long swPressStart = 0;
   static bool swWasLongPressed = false;
-  static bool firstEditFrame = true;
+  bool &firstEditFrame = editFirstFrame;
   static bool waitForRelease = false;
   static bool blinkOn = true;
   const unsigned long BLINK_ON_MS  = 500;
