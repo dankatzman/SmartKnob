@@ -121,7 +121,9 @@ bool  incomingActive = false;  // true after first BAND_ADD in this session
 // ── Tuning step ───────────────────────────────────────────────────────────────
 
 volatile long stepHz = 1000;  // Hz per encoder click: 1000 = 1 kHz, 500 = 0.5 kHz
+bool encReverse = false;      // true = flip CW/CCW direction
 #define EEPROM_STEP_ADDR 0
+#define EEPROM_ENC_REVERSE_ADDR 2   // 1 byte: 0x01 = reversed, else normal
 #define EEPROM_BAND_MAGIC_ADDR 12   // 2 bytes: 0x5A, 0xA5
 #define EEPROM_BAND_COUNT_ADDR 14   // 1 byte
 #define EEPROM_BAND_DATA_ADDR  15   // MAX_BANDS * 8 bytes (4 low + 4 high)
@@ -180,7 +182,7 @@ unsigned long pendingFreqBTimeMs = 0;
 #define FREQ_CONFIRM_MS 1500UL
 
 // ── Edit Mode Parameter Selection ────────────────────────────────────────────
-enum EditParam { EDIT_STEP = 0, EDIT_FROM = 1, EDIT_UP = 2 };
+enum EditParam { EDIT_STEP = 0, EDIT_FROM = 1, EDIT_UP = 2, EDIT_DIR = 3 };
 EditParam editParam = EDIT_STEP;
 volatile int8_t editDirection = 0; // set by ISR in edit mode: 1=up, -1=down
 
@@ -302,6 +304,16 @@ void writeStepField(long hz, bool editing = false, bool blinkNumbers = false, bo
   }
 }
 
+// ── DIR field (col 10–15, row 1) — shown only in edit mode when EDIT_DIR active ──
+void writeDirField(bool reversed, bool visible = true) {
+  lcd.setCursor(10, 1);
+  if (!visible) {
+    lcd.print("      ");
+  } else {
+    lcd.print(reversed ? " DIR:-" : " DIR:+");
+  }
+}
+
 // ── Split offset field (col 10–15, row 1) — shown only in split mode ─────────
 // Shows offset between controlled and frozen VFO, e.g. " +2.0K", "+12.5K".
 void writeSplitOffsetField(long offsetHz) {
@@ -402,7 +414,8 @@ void updateLcd() {
 // On rising CLK: DT==LOW → CW (up), DT==HIGH → CCW (down).
 // Hardware 0.1µF caps on CLK/DT handle debouncing — no software debounce needed.
 void encoderISR() {
-  int8_t dir = (digitalRead(ENC_DT) == HIGH) ? 1 : -1; // 1=CW=up, -1=CCW=down
+  int8_t dir = (digitalRead(ENC_DT) == LOW) ? 1 : -1; // 1=CW=up, -1=CCW=down
+  if (encReverse) dir = -dir;
 
   if (uiState == STATE_EDIT) {
     editDirection = dir; // 1=up, -1=down
@@ -909,6 +922,7 @@ void pollButton() {
       EEPROM.put(EEPROM_STEP_ADDR, stepHzCopy2);
       EEPROM.put(EEPROM_FROM_ADDR, rangeFromKHz);
       EEPROM.put(EEPROM_UP_ADDR, rangeUpKHz);
+      EEPROM.update(EEPROM_ENC_REVERSE_ADDR, encReverse ? 0x01 : 0x00);
       uiState = STATE_ONAIR;
       lastBlinkMs = now;
       stepFieldVisible = true;
@@ -998,6 +1012,9 @@ void setup() {
   } else {
     stepHz = 1000;
   }
+
+  // Load encReverse from EEPROM
+  encReverse = (EEPROM.read(EEPROM_ENC_REVERSE_ADDR) == 0x01);
 
   // Load band table from EEPROM if valid
   if (EEPROM.read(EEPROM_BAND_MAGIC_ADDR) == EEPROM_BAND_MAGIC1 &&
@@ -1128,6 +1145,7 @@ void handleEdit() {
       EEPROM.put(EEPROM_STEP_ADDR, stepHz);
       EEPROM.put(EEPROM_FROM_ADDR, rangeFromKHz);
       EEPROM.put(EEPROM_UP_ADDR, rangeUpKHz);
+      EEPROM.update(EEPROM_ENC_REVERSE_ADDR, encReverse ? 0x01 : 0x00);
       uiState = STATE_ONAIR;
       lastBlinkMs = now;
       stepFieldVisible = true;
@@ -1149,8 +1167,9 @@ void handleEdit() {
           case EDIT_STEP: writeStepField(stepHz, true); break;
           case EDIT_FROM:
           case EDIT_UP:   writeFromUpField(rangeFromKHz, rangeUpKHz); break;
+          case EDIT_DIR:  writeDirField(encReverse); break;
         }
-        editParam = (EditParam)(((int)editParam + 1) % 3);
+        editParam = (EditParam)(((int)editParam + 1) % 4);
         blinkOn = true;
         lastBlinkMs = now;
       }
@@ -1186,6 +1205,10 @@ void handleEdit() {
           if (rangeUpKHz > 99) rangeUpKHz = 1;
           writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, false, true, true); // UP only
           break;
+        case EDIT_DIR:
+          encReverse = !encReverse; // any turn toggles direction
+          writeDirField(encReverse, true);
+          break;
       }
       blinkOn = true; // restart blink cycle so value is visible right after change
       lastBlinkMs = now;
@@ -1209,6 +1232,10 @@ void handleEdit() {
         writeStepField(stepHz, true);
         writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, false, true, false); // UP hidden
         break;
+      case EDIT_DIR:
+        writeStepField(stepHz, true);
+        writeDirField(encReverse, false); // hidden
+        break;
     }
   } else if (!blinkOn && (now - lastBlinkMs >= BLINK_OFF_MS)) {
     blinkOn = true;
@@ -1225,6 +1252,10 @@ void handleEdit() {
       case EDIT_UP:
         writeStepField(stepHz, true);
         writeFromUpFieldBlink(rangeFromKHz, rangeUpKHz, false, true, true); // UP visible
+        break;
+      case EDIT_DIR:
+        writeStepField(stepHz, true);
+        writeDirField(encReverse, true); // visible
         break;
     }
   }
