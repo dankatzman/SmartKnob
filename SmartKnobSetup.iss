@@ -1,9 +1,9 @@
-; Inno Setup script for Smart Knob v2.7
+; Inno Setup script for Smart Knob v2.8
 ; Save this as SmartKnobSetup.iss and open with Inno Setup Compiler
 
 [Setup]
 AppName=Smart Knob
-AppVersion=2.7
+AppVersion=2.8
 DefaultDirName={commonpf}\SmartKnob
 DefaultGroupName=Smart Knob
 UninstallDisplayIcon={app}\smartknob.exe
@@ -14,7 +14,7 @@ SolidCompression=yes
 
 [Files]
 Source: "dist\smartknob.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\main_window_state.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "main_window_state.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\radio_profiles.ini"; DestDir: "{app}"; Flags: ignoreversion
 ; Add any other required files/folders below
 Source: "dist\*.*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
