@@ -1,5 +1,17 @@
-#define LED_RX_PIN 11
-#define LED_TX_PIN 12
+// ── Target Hardware: ESP32 DevKit1 ───────────────────────────────────────────
+// Pin Assignment:
+//   LCD SDA        → GPIO 21
+//   LCD SCL        → GPIO 22
+//   Encoder CLK    → GPIO 18
+//   Encoder DT     → GPIO 19
+//   Encoder SW     → GPIO 5
+//   LED RX (LED1)  → GPIO 25
+//   LED TX (LED2)  → GPIO 26
+//   Switch         → GPIO 27
+// ─────────────────────────────────────────────────────────────────────────────
+
+#define LED_RX_PIN 25
+#define LED_TX_PIN 26
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -27,15 +39,14 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // Rotary encoder pins (CLK/DT must be interrupt-capable: pins 2 and 3 on Uno)
 // Hardware debouncing: 0.1µF capacitor from each pin to GND
-const int ENC_CLK = 2;  // CLK (A) — INT0
-const int ENC_DT  = 3;  // DT  (B) — INT1
+const int ENC_CLK = 18; // CLK (A)
+const int ENC_DT  = 19; // DT  (B)
 
 // Pause/resume encoder interrupts (INT0/INT1) during critical sections.
 #define ENC_PAUSE()  noInterrupts()
 #define ENC_RESUME() interrupts()
-const int ENC_SW  = 6;  // Push button
-const int KNOB_TARGET_SW = 4;  // Toggle: HIGH = knob tunes TX, LOW = knob tunes RX
-const int LED_COMM_PIN   = 10; // ON while Python is actively sending commands
+const int ENC_SW  = 5;  // Push button
+const int KNOB_TARGET_SW = 27; // Toggle: HIGH = knob tunes TX, LOW = knob tunes RX
 
 // Identification banner sent to Python over FTDI
 const char *ARDUINO_BANNER = "HELLO_ARDUINO:VFOKNOB";
@@ -413,7 +424,7 @@ void updateLcd() {
 // ISR fires on every rising edge of CLK (RISING mode set in setup).
 // On rising CLK: DT==LOW → CW (up), DT==HIGH → CCW (down).
 // Hardware 0.1µF caps on CLK/DT handle debouncing — no software debounce needed.
-void encoderISR() {
+void IRAM_ATTR encoderISR() {
   int8_t dir = (digitalRead(ENC_DT) == LOW) ? 1 : -1; // 1=CW=up, -1=CCW=down
   if (encReverse) dir = -dir;
 
@@ -551,14 +562,15 @@ void handleCommand(const char *line) {
         bandHigh[i] = incomingBandHigh[i];
       }
       // Write to EEPROM
-      EEPROM.update(EEPROM_BAND_COUNT_ADDR, (uint8_t)bandCount);
+      EEPROM.write(EEPROM_BAND_COUNT_ADDR, (uint8_t)bandCount);
       for (int i = 0; i < bandCount; i++) {
         int addr = EEPROM_BAND_DATA_ADDR + i * 8;
         EEPROM.put(addr,     bandLow[i]);
         EEPROM.put(addr + 4, bandHigh[i]);
       }
-      EEPROM.update(EEPROM_BAND_MAGIC_ADDR,     EEPROM_BAND_MAGIC1);
-      EEPROM.update(EEPROM_BAND_MAGIC_ADDR + 1, EEPROM_BAND_MAGIC2);
+      EEPROM.write(EEPROM_BAND_MAGIC_ADDR,     EEPROM_BAND_MAGIC1);
+      EEPROM.write(EEPROM_BAND_MAGIC_ADDR + 1, EEPROM_BAND_MAGIC2);
+      EEPROM.commit();
       //Serial.println("DBG:EEPROM_UPDATED");
     } else {
       //Serial.println("DBG:EEPROM_SAME");
@@ -584,7 +596,7 @@ void handleCommand(const char *line) {
     if (star != NULL) {
       uint8_t expected = (uint8_t)strtol(star + 1, NULL, 16);
       uint8_t computed = 0;
-      for (char *c = line; c < star; c++) computed ^= (uint8_t)*c;
+      for (const char *c = line; c < star; c++) computed ^= (uint8_t)*c;
       if (computed != expected) return;  // corrupted — discard
       *star = '\0';  // strip checksum before parsing
     }
@@ -922,7 +934,8 @@ void pollButton() {
       EEPROM.put(EEPROM_STEP_ADDR, stepHzCopy2);
       EEPROM.put(EEPROM_FROM_ADDR, rangeFromKHz);
       EEPROM.put(EEPROM_UP_ADDR, rangeUpKHz);
-      EEPROM.update(EEPROM_ENC_REVERSE_ADDR, encReverse ? 0x01 : 0x00);
+      EEPROM.write(EEPROM_ENC_REVERSE_ADDR, encReverse ? 0x01 : 0x00);
+      EEPROM.commit();
       uiState = STATE_ONAIR;
       lastBlinkMs = now;
       stepFieldVisible = true;
@@ -1003,6 +1016,7 @@ void setup() {
     digitalWrite(LED_RX_PIN, knobControlsTx ? LOW : HIGH);
     digitalWrite(LED_TX_PIN, knobControlsTx ? HIGH : LOW);
   Serial.begin(PC_BAUD);
+  EEPROM.begin(256);
 
   // Load stepHz from EEPROM (default to 1000 if invalid)
   long eepromStep = 0;
@@ -1054,6 +1068,7 @@ void setup() {
     rangeUpKHz = 10;
   }
 
+  Wire.begin(21, 22);  // ESP32: SDA=GPIO21, SCL=GPIO22
   lcd.init();
   lcd.createChar(0, knobChar); // Ensure custom char is loaded after init
   lcd.backlight();
@@ -1063,9 +1078,6 @@ void setup() {
   writeFromUpField(rangeFromKHz, rangeUpKHz);
   writeFreqField(1, 0);
   writeStepField(stepHz, false);
-
-  pinMode(LED_COMM_PIN,   OUTPUT);
-  digitalWrite(LED_COMM_PIN, LOW);
 
   pinMode(ENC_CLK,        INPUT_PULLUP);
   pinMode(ENC_DT,         INPUT_PULLUP);
@@ -1145,7 +1157,8 @@ void handleEdit() {
       EEPROM.put(EEPROM_STEP_ADDR, stepHz);
       EEPROM.put(EEPROM_FROM_ADDR, rangeFromKHz);
       EEPROM.put(EEPROM_UP_ADDR, rangeUpKHz);
-      EEPROM.update(EEPROM_ENC_REVERSE_ADDR, encReverse ? 0x01 : 0x00);
+      EEPROM.write(EEPROM_ENC_REVERSE_ADDR, encReverse ? 0x01 : 0x00);
+      EEPROM.commit();
       uiState = STATE_ONAIR;
       lastBlinkMs = now;
       stepFieldVisible = true;
@@ -1322,5 +1335,4 @@ void loop() {
   if (bandCount == 0 && millis() - lastHelloMs >= 1000) {
     sendBanner();
   }
-  digitalWrite(LED_COMM_PIN, pythonAlive ? HIGH : LOW);
 }
