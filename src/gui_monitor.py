@@ -533,11 +533,10 @@ class RigMonitorWindow:
                 tk.Label(hdr, text=rig_text, fg="#0055cc",
                          font=("Segoe UI", 8), padx=0, pady=0, bd=0).place(
                              x=cx, y=0, anchor="n")
-            # Full-height red separator lines — midpoint between last port of rig N and first of rig N+1
+            # Full-height red separator lines — 6px before first port of next rig
             for last_lbl, first_lbl in pairs:
-                right_edge = last_lbl.winfo_rootx() + last_lbl.winfo_width() - srow.winfo_rootx()
-                left_edge  = first_lbl.winfo_rootx() - srow.winfo_rootx()
-                mx = (right_edge + left_edge) // 2
+                left_edge = first_lbl.winfo_rootx() - srow.winfo_rootx()
+                mx = left_edge - 6
                 tk.Frame(srow, width=2, height=total_h, bg="red").place(x=mx, y=0)
 
         frame.after(200, _place_rig_labels)
@@ -981,8 +980,8 @@ class RigMonitorWindow:
         # If a port was already confirmed, just verify it is still listed —
         # no need to open the port again (which resets the Arduino via DTR).
         if self._last_knob_port is not None:
-            available = SerialTransport.candidate_ports()
-            if self._last_knob_port in available:
+            from serial.tools import list_ports as _lp
+            if any(i.device.upper() == self._last_knob_port.upper() for i in _lp.comports()):
                 return  # Still present; keep showing "connected"
             # Port disappeared — clear state and fall through to a full probe.
             self._last_knob_port = None

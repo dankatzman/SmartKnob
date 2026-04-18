@@ -94,9 +94,18 @@ def omnirig_port_details() -> list[tuple[str, bool, str]]:
     return _omnirig_details_cache
 
 
+def _port_is_in_use(port: str) -> bool:
+    """Return True if the port is currently held open by another process (e.g. OmniRig)."""
+    try:
+        with serial.Serial(port=port, timeout=0.1):
+            return False  # opened successfully — nothing is holding it
+    except serial.SerialException:
+        return True  # port is busy — OmniRig (or something) has it open
+
+
 def omnirig_ports() -> set[str]:
-    """Return set of all radio COM ports to exclude from Arduino probe scan."""
-    return {port for port, _, _rig in omnirig_port_details()}
+    """Return set of radio COM ports actually in use — exclude these from Arduino scan."""
+    return {port for port, _, _rig in omnirig_port_details() if _port_is_in_use(port)}
 
 
 ARDUINO_ID_BANNER = "HELLO_ARDUINO:VFOKNOB"
@@ -140,7 +149,10 @@ class SerialTransport:
 
 	def open(self, port: str, baudrate: int, timeout_s: float = 0.25) -> None:
 		self.close()
-		self._ser = serial.Serial(port=port, baudrate=baudrate, timeout=timeout_s)
+		s = serial.Serial(port=port, baudrate=baudrate, timeout=timeout_s)
+		time.sleep(1.5)          # allow ESP32 to finish boot after DTR-triggered reset
+		s.reset_input_buffer()   # discard boot ROM garbage before reader starts
+		self._ser = s
 
 	def close(self) -> None:
 		if self._ser is not None:
@@ -177,11 +189,13 @@ class SerialTransport:
 					raw = handle.readline()
 					if raw:
 						text = raw.decode("utf-8", errors="ignore").strip()
+						print(f"[probe] {port} received: {repr(text)}")
 						if text == ARDUINO_ID_BANNER or ARDUINO_ID_BANNER in text:
 							return True, None
 
 					now = time.monotonic()
 					if now >= next_query_at:
+						print(f"[probe] {port} sending WHO")
 						try:
 							handle.write(b"WHO\n")
 						except Exception:
@@ -190,6 +204,7 @@ class SerialTransport:
 
 				return False, "Banner not received"
 		except Exception as exc:
+			print(f"[probe] {port} ERROR: {exc}")
 			return False, str(exc)
 
 	@staticmethod
