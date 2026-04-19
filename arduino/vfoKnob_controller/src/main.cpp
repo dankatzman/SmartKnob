@@ -63,19 +63,18 @@ unsigned long lastPythonMsgMs = 0;
 const unsigned long COMM_TIMEOUT_MS = 3000;
 bool commConnected = false;   // true while Python is actively connected
 
-// ── Rotary encoder — interrupt-driven quadrature state machine ────────────────
-// Quadrature lookup table.
-// Index = (prevState << 2) | currState, where state = (CLK<<1)|DT.
-// +1 = CW, -1 = CCW, 0 = bounce/invalid (ignored).
-const int8_t ENC_TABLE[16] = {
+// ── Rotary encoder — 4-state quadrature, CHANGE on CLK+DT ───────────────────
+// Fires on every edge of CLK and DT. The lookup table filters invalid
+// transitions (bounces). Steps accumulate ±1 per valid transition;
+// one mechanical detent = 4 valid transitions → fires on reaching ±4.
+static const int8_t ENC_TABLE[16] = {
    0, -1,  1,  0,
    1,  0,  0, -1,
   -1,  0,  0,  1,
    0,  1, -1,  0
 };
-
-volatile uint8_t encClkLast = HIGH;
-unsigned long encLastEdgeMs = 0;
+volatile uint8_t encState = 0;
+volatile int8_t  encAccum = 0;
 
 // pendingHz is written by the ISR — read atomically in main loop.
 volatile long pendingHz = 0;
@@ -417,19 +416,22 @@ void updateLcd() {
 }
 
 // ── Encoder ISR ───────────────────────────────────────────────────────────────
-// Fires on every CHANGE of CLK or DT.
-// Direct port read (PIND) instead of digitalRead() for speed.
-// ENC_CLK = pin 2 = PD2, ENC_DT = pin 3 = PD3.
-
-// ISR fires on every rising edge of CLK (RISING mode set in setup).
-// On rising CLK: DT==LOW → CW (up), DT==HIGH → CCW (down).
-// Hardware 0.1µF caps on CLK/DT handle debouncing — no software debounce needed.
+// Fires on CHANGE of CLK or DT. Lookup table filters invalid transitions.
+// Accumulates ±1 per valid transition; fires a step on ±4 (= 1 detent).
 void IRAM_ATTR encoderISR() {
-  int8_t dir = (digitalRead(ENC_DT) == LOW) ? 1 : -1; // 1=CW=up, -1=CCW=down
+  uint8_t newState = (digitalRead(ENC_CLK) << 1) | digitalRead(ENC_DT);
+  int8_t delta = ENC_TABLE[(encState << 2) | newState];
+  encState = newState;
+  if (delta == 0) return;  // invalid/bounce transition — ignore
+  encAccum += delta;
+  int8_t dir = 0;
+  if (encAccum <= -4) { dir =  1; encAccum = 0; }  // CW
+  if (encAccum >=  4) { dir = -1; encAccum = 0; }  // CCW
+  if (dir == 0) return;   // not yet a full detent
   if (encReverse) dir = -dir;
 
   if (uiState == STATE_EDIT) {
-    editDirection = dir; // 1=up, -1=down
+    editDirection = dir;
     stepChanged = true;
     return;
   }
@@ -439,7 +441,7 @@ void IRAM_ATTR encoderISR() {
   long baseFreq = (targetVfo == 'A') ? lcdFreqA : lcdFreqB;
   bool *snapPending = (targetVfo == 'A') ? &snapPendingA : &snapPendingB;
 
-  if (dir > 0) { // CW = up
+  if (dir > 0) {
     if (*snapPending) {
       long snapped = ((baseFreq + stepHz - 1) / stepHz) * stepHz;
       long delta = snapped - baseFreq;
@@ -449,7 +451,7 @@ void IRAM_ATTR encoderISR() {
     } else {
       pendingHz += stepHz;
     }
-  } else { // CCW = down
+  } else {
     if (*snapPending) {
       long snapped = (baseFreq / stepHz) * stepHz;
       long delta = snapped - baseFreq;
@@ -462,7 +464,7 @@ void IRAM_ATTR encoderISR() {
   }
 }
 
-void pollEncoder() {} // encoder is now ISR-driven; kept to avoid removing call sites below
+void pollEncoder() {} // encoder is ISR-driven; kept to avoid removing call sites
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 
@@ -862,7 +864,7 @@ void pollFreqSend() {
       return;
     }
     long newFreq = baseFreq + pk;
-    // Discard if step is physically impossible (corruption guard: max 15 clicks per poll)
+    // Discard if step is physically impossible (corruption guard: max 200 clicks per poll)
     if (abs(newFreq - baseFreq) > 15 * stepHz) {
       ENC_PAUSE(); pendingHz = 0; ENC_RESUME();
       return;
@@ -1084,10 +1086,11 @@ void setup() {
   pinMode(ENC_SW,         INPUT_PULLUP);
   pinMode(KNOB_TARGET_SW, INPUT_PULLUP);
 
-  encClkLast = digitalRead(ENC_CLK);
+  encState = (digitalRead(ENC_CLK) << 1) | digitalRead(ENC_DT);
   lastSw   = digitalRead(ENC_SW);
 
-  attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_DT),  encoderISR, CHANGE);
 
   delay(1200);
   sendBanner();

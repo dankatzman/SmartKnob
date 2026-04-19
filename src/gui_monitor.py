@@ -124,6 +124,55 @@ from version import __version__, DEBUG_MODE
 # Must match FTDI_BAUD in main.cpp.
 _KNOB_BAUD = 57600
 
+def _radio_button(
+    parent: tk.Widget,
+    text: str,
+    variable: tk.IntVar,
+    value: int,
+    command: Any,
+    font: tuple = ("Segoe UI", 9),
+    fg: str = "#000000",
+    gap: int = 2,
+) -> tk.Canvas:
+    """Custom radio button: circle indicator immediately next to text, no tkinter gap."""
+    font_obj = tkfont.Font(font=font)
+    text_w = font_obj.measure(text)
+    text_h = font_obj.metrics("linespace")
+    r = text_h // 2 - 1          # circle radius
+    dot_r = r - 3                 # inner filled dot radius
+    circle_w = r * 2 + 2
+    width = circle_w + gap + text_w + 2
+    height = text_h + 2
+    parent_bg = _widget_bg(parent)
+
+    canvas = tk.Canvas(parent, width=width, height=height,
+                       bg=parent_bg, highlightthickness=0, bd=0, cursor="hand2")
+
+    cx = r + 1
+    cy = height // 2
+
+    def _draw():
+        canvas.delete("all")
+        selected = variable.get() == value
+        canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                           outline="#555555", fill="white", width=1)
+        if selected:
+            canvas.create_oval(cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r,
+                               fill="#333333", outline="")
+        canvas.create_text(circle_w + gap, cy, text=text, font=font,
+                           fill=fg, anchor="w")
+
+    _draw()
+    variable.trace_add("write", lambda *_: _draw())
+
+    def _click(_):
+        variable.set(value)
+        command()
+
+    canvas.bind("<Button-1>", _click)
+    return canvas
+
+
 def _rounded_button(
     parent: tk.Widget,
     text: str,
@@ -304,10 +353,13 @@ class RigMonitorWindow:
         self._band_table_sent: bool = False
         self._last_freq_send: float = 0.0
         self._freq_send_interval: float = 1.0
+        self._last_freq_cmd_time: float = 0.0
+        self._freq_flush_pending: bool = False
+        self._last_omnirig_success_time: float = time.monotonic()
         self._freq_fail_count: int = 0
-        self._freq_fail_threshold: int = 3
+        self._freq_fail_threshold: int = 10
         self._omnirig_fail_count: int = 0
-        self._omnirig_fail_threshold: int = 3
+        self._omnirig_fail_threshold: int = 10
         self._last_omnirig_report: str = ""
         self._row_default_bg: str | None = None
         self._calib_instruction_var = tk.StringVar(
@@ -348,6 +400,7 @@ class RigMonitorWindow:
         else:
             app_dir = Path(__file__).resolve().parents[1]
         self._window_state_path = app_dir / "main_window_state.json"
+        self._omnirig_rig_var = tk.IntVar(value=1)
         try:
             if self._window_state_path.exists():
                 with open(self._window_state_path, "r", encoding="utf-8") as f:
@@ -363,6 +416,9 @@ class RigMonitorWindow:
                         x = max(0, min(x, sw - 100))
                         y = max(0, min(y, sh - 80))
                         self._root.geometry(f"{width}x{height}+{x}+{y}")
+                    saved_rig = state.get("omnirig_rig", 1)
+                    self._omnirig_rig_var.set(saved_rig)
+                    self._rig.set_rig_number(saved_rig)
         except Exception:
             pass
 
@@ -379,7 +435,7 @@ class RigMonitorWindow:
         try:
             geom = self._root.geometry()
             with open(self._window_state_path, "w", encoding="utf-8") as f:
-                json.dump({"geometry": geom}, f)
+                json.dump({"geometry": geom, "omnirig_rig": self._omnirig_rig_var.get()}, f)
         except Exception:
             pass
         self._root.quit()
@@ -471,10 +527,26 @@ class RigMonitorWindow:
         status_row = tk.Frame(frame)
         status_row.grid(row=8, column=0, columnspan=4, sticky="ew")
 
-        # Fixed-height header band for "Rig 1" / "Rig 2" labels (populated after layout via place())
-        rig_header = tk.Frame(status_row, height=13)
-        rig_header.pack(side=tk.TOP, fill=tk.X)
-        rig_header.pack_propagate(False)
+        # RIG selector row — also hosts the floating "Rig 1"/"Rig 2" port-group labels
+        rig_sel_row = tk.Frame(status_row)
+        rig_sel_row.pack(side=tk.TOP, fill=tk.X)
+
+        def _on_rig_changed():
+            n = self._omnirig_rig_var.get()
+            self._rig.set_rig_number(n)
+            try:
+                geom = self._root.geometry()
+                with open(self._window_state_path, "w", encoding="utf-8") as f:
+                    json.dump({"geometry": geom, "omnirig_rig": n}, f)
+            except Exception:
+                pass
+
+        tk.Label(rig_sel_row, text="Connect:", font=("Segoe UI", 9), padx=0, pady=0, bd=0).pack(
+            side=tk.LEFT)
+        for val, txt in ((1, "RIG1"), (2, "RIG2")):
+            _radio_button(
+                rig_sel_row, txt, self._omnirig_rig_var, val, _on_rig_changed,
+            ).pack(side=tk.LEFT, padx=(6, 0) if txt == "RIG1" else (2, 0))
 
         # Main row: OmniRig + Radio + ports all packed left→right
         main_row = tk.Frame(status_row)
@@ -489,8 +561,7 @@ class RigMonitorWindow:
         )
         self._omnirig_report_label.pack(side=tk.LEFT)
 
-        tk.Label(main_row, text="Radio:", fg="#0055cc",
-                 font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0).pack(
+        tk.Label(main_row, text="", padx=0, pady=0, bd=0).pack(
                      side=tk.LEFT, padx=(12, 2))
 
         # port_widget_refs: rig -> list of port Label widgets (for rig-label placement)
@@ -518,11 +589,11 @@ class RigMonitorWindow:
                      font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0).pack(side=tk.LEFT)
 
         # After layout is computed: place rig name labels and full-height red separators
-        def _place_rig_labels(refs=port_widget_refs, hdr=rig_header,
+        def _place_rig_labels(refs=port_widget_refs, hdr=rig_sel_row,
                                srow=status_row, pairs=sep_pairs):
             hdr.update_idletasks()  # ensure geometry is computed before measuring
             total_h = srow.winfo_height()
-            # Rig name labels centered above their port groups
+            # Rig name labels centered above their port groups, placed into rig_sel_row
             for rig, labels in refs.items():
                 if not labels:
                     continue
@@ -871,7 +942,7 @@ class RigMonitorWindow:
         if self._transport is None or not self._transport.is_connected:
             return
         if self._band_table_sent:
-            print("[BANDS] already sent — skipping")
+
             return
         self._band_table_sent = True
         try:
@@ -1178,6 +1249,7 @@ class RigMonitorWindow:
             vfo = parts[1] if len(parts) > 1 else self._rig.get_knob_display_vfo()
             if hz <= 0:
                 return
+            # Update display immediately for every step
             if vfo == "A":
                 self._vfo_a_var.set(_fmt_hz(hz))
             elif vfo == "B":
@@ -1186,14 +1258,25 @@ class RigMonitorWindow:
             self._pending_freq_vfo = vfo
             self._current_freq_var.set(_fmt_hz(hz))
             self._freq_display_gate_until = time.monotonic() + 0.8
-            self._set_freq_gen += 1
-            gen = self._set_freq_gen
-            freq_a_baseline = self._rig.get_raw_param("FreqA") or 0
-            _dprint(f"[_on_set_freq] calling set_frequency({hz}, {vfo}) gen={gen} baseline={freq_a_baseline}")
-            self._rig.set_frequency(hz, vfo)
-            self._root.after(600, lambda h=hz, v=vfo, g=gen, b=freq_a_baseline: self._retry_set_freq(h, v, g, b, attempt=1))
             self._set_knob_report("Knob active", ok=True)
             self._knob_status_until = time.monotonic() + 2.0
+            # Debounce: only send to OmniRig once rotation pauses (50 ms after last step)
+            if not self._freq_flush_pending:
+                self._freq_flush_pending = True
+                self._root.after(50, self._flush_freq_to_radio)
+        except Exception as exc:
+            self._set_knob_report(f"Set freq error: {exc}", ok=False)
+            self._knob_status_until = time.monotonic() + 4.0
+
+    def _flush_freq_to_radio(self) -> None:
+        self._freq_flush_pending = False
+        hz = self._pending_freq_hz
+        vfo = self._pending_freq_vfo
+        if not hz or hz <= 0:
+            return
+        try:
+            self._last_freq_cmd_time = time.monotonic()
+            self._rig.set_frequency(hz, vfo)
         except Exception as exc:
             self._set_knob_report(f"Set freq error: {exc}", ok=False)
             self._knob_status_until = time.monotonic() + 4.0
@@ -1300,21 +1383,22 @@ class RigMonitorWindow:
         self._apply_split_visual_effect(split)
 
         if not omnirig_running or freq_a is None or freq_b is None:
-            self._omnirig_fail_count += 1
             self._freq_fail_count += 1
-            if self._omnirig_fail_count >= self._omnirig_fail_threshold:
+            if self._freq_fail_count >= self._freq_fail_threshold:
+                self._set_na_values()
+            silence = time.monotonic() - self._last_omnirig_success_time
+            if silence >= 3.0:
                 if self._last_omnirig_report != "Not active":
                     self._set_omnirig_report("Not active", ok=False)
                     self._last_omnirig_report = "Not active"
                 # Force "---" every cycle while not active — overrides any stale cache
                 self._vfo_a_var.set("---------")
                 self._vfo_b_var.set("---------")
-            if self._freq_fail_count >= self._freq_fail_threshold:
-                self._set_na_values()
         else:
-            # Success: update fail counters and GUI
-            self._freq_fail_count = 0  # Reset fail counter on success
-            self._omnirig_fail_count = 0  # Reset omnirig fail counter on success
+            # Success
+            self._last_omnirig_success_time = time.monotonic()
+            self._freq_fail_count = 0
+            self._omnirig_fail_count = 0
             self._update_active_vfo_display("A")
             if self._last_omnirig_report != "Active":
                 self._set_omnirig_report("Active", ok=True)

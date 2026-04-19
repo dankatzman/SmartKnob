@@ -14,15 +14,19 @@ _omnirig_details_cache: list[tuple[str, bool]] | None = None  # (port, is_primar
 
 
 def _build_omnirig_details() -> list[tuple[str, bool, str]]:
-    """Scan OmniRig.ini and USB siblings. Returns ordered list of (port, is_primary, rig).
-    is_primary=True  → OmniRig configured port (shown in blue)
-    is_primary=False → sibling port same USB device (shown in black)
-    rig → "RIG1" or "RIG2"
-    Order: RIG1 primary, RIG1 siblings, RIG2 primary, RIG2 siblings."""
+    """Build ordered list of (port, is_blue, rig) for GUI display and Arduino exclusion.
+
+    Logic:
+    - Read RIG1 and RIG2 configured ports from OmniRig.ini.
+    - A configured port that is alive (present in system) → blue.
+    - A configured port that is NOT alive → black.
+    - For each alive configured port: find USB siblings (other ports on the same
+      physical USB device that are not any rig's configured port) → black.
+    """
     import configparser
     import os
 
-    # Step 1: read primary ports per rig from OmniRig.ini
+    # Step 1: read configured ports from OmniRig.ini
     rig_ports: list[tuple[str, str]] = []  # (port, rig_name)
     appdata = os.environ.get("APPDATA", "")
     ini_candidates = [
@@ -46,11 +50,12 @@ def _build_omnirig_details() -> list[tuple[str, bool, str]]:
             pass
         break
 
-    # Step 2: for each primary port, find USB sibling ports (same VID/PID)
     result: list[tuple[str, bool, str]] = []
-    seen: set[str] = set()
     try:
         all_com = list(list_ports.comports())
+        alive_ports: set[str] = {info.device.upper() for info in all_com}
+
+        # Build VID:PID → [ports] map for sibling detection
         vidpid_to_ports: dict[str, list[str]] = {}
         for info in all_com:
             vid = getattr(info, 'vid', None)
@@ -59,29 +64,49 @@ def _build_omnirig_details() -> list[tuple[str, bool, str]]:
                 key = f"{vid:04X}:{pid:04X}"
                 vidpid_to_ports.setdefault(key, []).append(info.device.upper())
 
-        for primary_port, rig_name in rig_ports:
-            if primary_port in seen:
-                continue
-            seen.add(primary_port)
-            result.append((primary_port, True, rig_name))
-            # find siblings
+        # Build USB sibling sets for each configured port
+        port_siblings: dict[str, set[str]] = {}
+        for primary_port, _ in rig_ports:
+            siblings: set[str] = set()
             for info in all_com:
-                vid = getattr(info, 'vid', None)
-                pid = getattr(info, 'pid', None)
-                if vid is None or pid is None:
-                    continue
                 if info.device.upper() == primary_port:
-                    key = f"{vid:04X}:{pid:04X}"
-                    for sibling in vidpid_to_ports.get(key, []):
-                        if sibling not in seen:
-                            seen.add(sibling)
-                            result.append((sibling, False, rig_name))
-                            print(f"[probe] {sibling} shares USB device with radio — excluded from Arduino scan")
+                    vid = getattr(info, 'vid', None)
+                    pid = getattr(info, 'pid', None)
+                    if vid is not None and pid is not None:
+                        key = f"{vid:04X}:{pid:04X}"
+                        siblings = set(vidpid_to_ports.get(key, [])) - {primary_port}
+            port_siblings[primary_port] = siblings
+
+        # Process rigs in order.
+        # claimed_siblings: USB siblings already shown under an earlier rig.
+        # seen_primaries: configured ports already processed (shown as primary).
+        # Rules:
+        #   - Configured port is BLUE if alive and NOT a sibling of an earlier rig.
+        #   - Configured port is BLACK if not alive OR is a sibling of an earlier rig.
+        #   - USB siblings of an alive configured port are shown BLACK under that rig,
+        #     but only if not already shown as an earlier rig's primary.
+        claimed_siblings: set[str] = set()
+        seen_primaries: set[str] = set()
+
+        for primary_port, rig_name in rig_ports:
+            if primary_port in seen_primaries:
+                continue
+            seen_primaries.add(primary_port)
+
+            is_alive = primary_port in alive_ports
+            is_blue = is_alive and primary_port not in claimed_siblings
+            result.append((primary_port, is_blue, rig_name))
+
+            if is_alive:
+                for sibling in sorted(port_siblings.get(primary_port, set())):
+                    if sibling not in seen_primaries:
+                        result.append((sibling, False, rig_name))
+                        print(f"[probe] {sibling} is a sibling of {primary_port} — excluded from Arduino scan")
+                claimed_siblings.update(port_siblings.get(primary_port, set()))
+
     except Exception:
         for primary_port, rig_name in rig_ports:
-            if primary_port not in seen:
-                seen.add(primary_port)
-                result.append((primary_port, True, rig_name))
+            result.append((primary_port, True, rig_name))
 
     return result
 
@@ -94,18 +119,9 @@ def omnirig_port_details() -> list[tuple[str, bool, str]]:
     return _omnirig_details_cache
 
 
-def _port_is_in_use(port: str) -> bool:
-    """Return True if the port is currently held open by another process (e.g. OmniRig)."""
-    try:
-        with serial.Serial(port=port, timeout=0.1):
-            return False  # opened successfully — nothing is holding it
-    except serial.SerialException:
-        return True  # port is busy — OmniRig (or something) has it open
-
-
 def omnirig_ports() -> set[str]:
-    """Return set of radio COM ports actually in use — exclude these from Arduino scan."""
-    return {port for port, _, _rig in omnirig_port_details() if _port_is_in_use(port)}
+    """Return set of radio COM ports configured in OmniRig — exclude these from Arduino scan."""
+    return {port for port, _, _rig in omnirig_port_details()}
 
 
 ARDUINO_ID_BANNER = "HELLO_ARDUINO:VFOKNOB"
