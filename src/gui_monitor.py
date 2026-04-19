@@ -333,6 +333,7 @@ class RigMonitorWindow:
         self._split_var = tk.StringVar(value="-")
         self._omnirig_report_var = tk.StringVar(value="OmniRig: Checking...")
         self._knob_report_var = tk.StringVar(value="Knob: Not connected")
+        self._btn_report_var = tk.StringVar(value="")
         self._radio_port_details = omnirig_port_details()
         self._debug_var = tk.StringVar(value="Debug: -")
         self._radio_type_name_label: tk.Label | None = None
@@ -621,6 +622,15 @@ class RigMonitorWindow:
         )
         self._knob_report_label.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(0, 0))
 
+        self._btn_report_label = tk.Label(
+            frame,
+            textvariable=self._btn_report_var,
+            fg="#005fa3",
+            font=("Segoe UI", 10),
+            anchor="w",
+        )
+        self._btn_report_label.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(0, 0))
+
         # --- R&D DEBUG BAR: remove this block when research is done ---
         self._debug_label = tk.Label(
             frame,
@@ -633,7 +643,7 @@ class RigMonitorWindow:
             cursor="hand2",
         )
         if DEBUG_MODE:
-            self._debug_label.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+            self._debug_label.grid(row=11, column=0, columnspan=4, sticky="ew", pady=(4, 0))
         self._debug_label.bind("<Button-1>", lambda e: self._copy_debug_to_clipboard())
         # --- END R&D DEBUG BAR ---
 
@@ -1335,8 +1345,16 @@ class RigMonitorWindow:
     def _on_btn_press(self, n: int) -> None:
         """Called when ESP32 extra button n (1–4) is pressed — play voice message."""
         cmd = self._rig.get_voice_msg_command(n)
+        print(f"[BTN] button {n} pressed — cmd={repr(cmd)}")
         if cmd:
-            self._rig.send_cat_command(cmd)
+            ok = self._rig.send_cat_command(cmd)
+            msg = f"BTN {n}: {cmd.strip()} {'sent' if ok else 'FAILED (no CAT link)'}"
+            print(f"[BTN] {msg}")
+        else:
+            msg = f"BTN {n}: no voice_msg_{n} command configured for this radio"
+            print(f"[BTN] {msg}")
+        self._btn_report_var.set(msg)
+        self._root.after(4000, lambda: self._btn_report_var.set(""))
 
     def _on_set_split(self, enabled: bool) -> None:
         """Called when the Arduino button initiates a split ON or OFF."""
