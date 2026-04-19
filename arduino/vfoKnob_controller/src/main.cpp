@@ -146,6 +146,30 @@ bool swWasLongPressed = false;
 volatile bool stepChanged = false; // Set by ISR, handled in main loop
 bool editFirstFrame = true;        // Reset each time edit mode is entered
 
+// ── Extra buttons (voice message triggers) ───────────────────────────────────
+// GPIO 32, 33, 13, 14 — INPUT_PULLUP, fire BTN:n on press in STATE_ONAIR.
+const int EXTRA_BTN_PINS[4] = {32, 33, 13, 14};
+int    extraBtnLast[4]      = {HIGH, HIGH, HIGH, HIGH};
+unsigned long extraBtnMs[4] = {0, 0, 0, 0};
+bool   extraBtnArmed[4]     = {true, true, true, true};
+
+void pollExtraButtons() {
+  unsigned long now = millis();
+  for (int i = 0; i < 4; i++) {
+    int raw = digitalRead(EXTRA_BTN_PINS[i]);
+    if (raw != extraBtnLast[i]) extraBtnMs[i] = now;
+    if ((now - extraBtnMs[i]) >= 50) {
+      if (raw == LOW && extraBtnArmed[i]) {
+        Serial.print("BTN:");
+        Serial.println(i + 1);
+        extraBtnArmed[i] = false;
+      }
+      if (raw == HIGH) extraBtnArmed[i] = true;
+    }
+    extraBtnLast[i] = raw;
+  }
+}
+
 // ── Button ────────────────────────────────────────────────────────────────────
 
 int lastSw = HIGH;
@@ -1085,6 +1109,10 @@ void setup() {
   pinMode(ENC_DT,         INPUT_PULLUP);
   pinMode(ENC_SW,         INPUT_PULLUP);
   pinMode(KNOB_TARGET_SW, INPUT_PULLUP);
+  for (int i = 0; i < 4; i++) {
+    pinMode(EXTRA_BTN_PINS[i], INPUT_PULLUP);
+    extraBtnLast[i] = digitalRead(EXTRA_BTN_PINS[i]);
+  }
 
   encState = (digitalRead(ENC_CLK) << 1) | digitalRead(ENC_DT);
   lastSw   = digitalRead(ENC_SW);
@@ -1102,6 +1130,7 @@ void handleOnAir() {
   pollEncoder();
   pollFreqSend();
   pollButton();
+  pollExtraButtons();
   pollFtdi();
   // Always show step field in normal mode
   if (!stepFieldVisible) {

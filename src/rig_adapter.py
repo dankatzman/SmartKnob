@@ -143,7 +143,18 @@ class RigAdapter:
 		"""Re-initialize the backend (OmniRig) after reconnect."""
 		self._try_init_backend()
 
-	def __init__(self, prefer_real_backend: bool = True, profile_ini_path: Optional[str] = None) -> None:
+	def set_rig_number(self, n: int) -> None:
+		self._rig_number = n
+		if self._backend is not None:
+			set_active = getattr(self._backend, "setActiveRig", None)
+			if callable(set_active):
+				try:
+					set_active(n)
+				except Exception:
+					pass
+
+	def __init__(self, prefer_real_backend: bool = True, profile_ini_path: Optional[str] = None, rig_number: int = 1) -> None:
+		self._rig_number = rig_number
 		self._state = RigState()
 		self._backend: Optional[Any] = None
 		self._backend_name = "mock"
@@ -208,7 +219,7 @@ class RigAdapter:
 				wrapper = wrapper_ctor()
 				set_active = getattr(wrapper, "setActiveRig", None)
 				if callable(set_active):
-					set_active(1)
+					set_active(self._rig_number)
 				candidates.append(wrapper)
 			except Exception as exc:
 				# print(f"[RigAdapter] OmniRigWrapper failed: {exc}")
@@ -235,7 +246,7 @@ class RigAdapter:
 			if backend is not None:
 				self._backend = backend
 				self._backend_name = type(backend).__name__
-				name = self._call_any(["get_radio_name", "radio_name", "name"]) 
+				name = self._call_any(["get_radio_name", "radio_name", "name"])
 				if not isinstance(name, str) or not name.strip():
 					name = self._get_param("RigType")
 				if isinstance(name, str) and name.strip():
@@ -587,8 +598,10 @@ class RigAdapter:
 			status = self._safe_int(self._get_param("Status"))
 
 			# OmniRig status 4 = OnLine (radio physically responding).
-			# Any other status means the radio is off or not communicating —
-			# return None so the GUI shows "---" and the Arduino stays inactive.
+			# Status 3 = port temporarily busy — return cached frequency to ride out the blip.
+			# Any other status means the radio is off or not communicating.
+			if status == 3 and self._freq_confirmed:
+				return self._state.freq_a_hz if selected_vfo == "A" else self._state.freq_b_hz
 			if status != 4:
 				self._freq_confirmed = False
 				return None
@@ -828,6 +841,41 @@ class RigAdapter:
 		self._state.split = enabled
 		self._last_wrapper_split = enabled
 		return enabled
+
+	def get_voice_msg_command(self, n: int) -> Optional[str]:
+		"""Return the CAT command string for voice message n (1–4), or None."""
+		override = self._get_radio_profile_override()
+		if override is None:
+			return None
+		return override.get(f"voice_msg_{n}") or None
+
+	def send_cat_command(self, cmd: str) -> bool:
+		"""Send a raw CAT command via OmniRig SendCustomCommand.
+
+		Accepts ASCII (e.g. 'PB01;') or space-separated hex bytes
+		(e.g. 'FE FE 94 E0 28 01 FD'). Returns True if the call succeeded.
+		"""
+		if not self._is_wrapper_backend():
+			return False
+		try:
+			parts = cmd.strip().split()
+			is_hex = (
+				len(parts) > 1
+				and all(len(p) == 2 and all(c in "0123456789abcdefABCDEF" for c in p) for p in parts)
+			)
+			raw = bytes(int(p, 16) for p in parts) if is_hex else cmd.encode("ascii")
+
+			for obj in (self._backend, getattr(self._backend, "_rig", None)):
+				if obj is None:
+					continue
+				for name in ("SendCustomCommand", "sendCustomCommand"):
+					method = getattr(obj, name, None)
+					if callable(method):
+						method(raw)
+						return True
+		except Exception:
+			pass
+		return False
 
 	def set_tx(self, enabled: bool) -> bool:
 		if self._is_wrapper_backend():

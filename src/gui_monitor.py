@@ -995,6 +995,12 @@ class RigMonitorWindow:
                     self._root.after(0, lambda: self._on_set_split(True))
                 elif line == "SET_SPLIT:OFF":
                     self._root.after(0, lambda: self._on_set_split(False))
+                elif line.startswith("BTN:"):
+                    try:
+                        n = int(line[4:])
+                        self._root.after(0, lambda n=n: self._on_btn_press(n))
+                    except ValueError:
+                        pass
                 elif line.startswith("DBG:"):
                     print(f"[ARDUINO] {line}")
                 elif line.startswith("BANDS:") or line.startswith("BAND:"):
@@ -1325,6 +1331,12 @@ class RigMonitorWindow:
         """Called when the Arduino reports it has no base frequency yet."""
         self._set_knob_report("Knob turned but no base frequency received yet", ok=False)
         self._knob_status_until = time.monotonic() + 3.0
+
+    def _on_btn_press(self, n: int) -> None:
+        """Called when ESP32 extra button n (1–4) is pressed — play voice message."""
+        cmd = self._rig.get_voice_msg_command(n)
+        if cmd:
+            self._rig.send_cat_command(cmd)
 
     def _on_set_split(self, enabled: bool) -> None:
         """Called when the Arduino button initiates a split ON or OFF."""
