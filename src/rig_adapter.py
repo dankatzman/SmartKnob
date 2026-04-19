@@ -865,16 +865,21 @@ class RigAdapter:
 			)
 			raw = bytes(int(p, 16) for p in parts) if is_hex else cmd.encode("ascii")
 
-			for obj in (self._backend, getattr(self._backend, "_rig", None)):
-				if obj is None:
-					continue
-				for name in ("SendCustomCommand", "sendCustomCommand"):
-					method = getattr(obj, name, None)
-					if callable(method):
-						method(raw)
-						return True
-		except Exception:
-			pass
+			# omnipyrig OmniRigWrapper exposes setCustomCommand(cmd, reply_len, reply_end)
+			m = getattr(self._backend, "setCustomCommand", None)
+			if callable(m):
+				m(raw, 0, b"")
+				return True
+
+			# Fallback: OmniRig COM SendCustomCommand(RigNumber, Command, ReplyLength, ReplyEnd)
+			rig = getattr(self._backend, "_rig", None)
+			if rig is not None:
+				m = getattr(rig, "SendCustomCommand", None)
+				if callable(m):
+					m(self._rig_number, raw, 0, b"")
+					return True
+		except Exception as exc:
+			print(f"[CAT] send_cat_command exception: {exc}")
 		return False
 
 	def set_tx(self, enabled: bool) -> bool:

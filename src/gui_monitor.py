@@ -1345,14 +1345,11 @@ class RigMonitorWindow:
     def _on_btn_press(self, n: int) -> None:
         """Called when ESP32 extra button n (1–4) is pressed — play voice message."""
         cmd = self._rig.get_voice_msg_command(n)
-        print(f"[BTN] button {n} pressed — cmd={repr(cmd)}")
         if cmd:
             ok = self._rig.send_cat_command(cmd)
             msg = f"BTN {n}: {cmd.strip()} {'sent' if ok else 'FAILED (no CAT link)'}"
-            print(f"[BTN] {msg}")
         else:
-            msg = f"BTN {n}: no voice_msg_{n} command configured for this radio"
-            print(f"[BTN] {msg}")
+            msg = f"BTN {n}: no voice_msg_{n} configured for this radio"
         self._btn_report_var.set(msg)
         self._root.after(4000, lambda: self._btn_report_var.set(""))
 
