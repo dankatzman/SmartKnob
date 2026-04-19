@@ -334,6 +334,9 @@ class RigMonitorWindow:
         self._omnirig_report_var = tk.StringVar(value="OmniRig: Checking...")
         self._knob_report_var = tk.StringVar(value="Knob: Not connected")
         self._btn_report_var = tk.StringVar(value="")
+        self._voice_btn_pending: int | None = None   # btn# waiting for TX to confirm
+        self._voice_btn_deadline: float = 0.0         # give up if TX doesn't appear by this time
+        self._voice_tx_n: int | None = None           # btn# currently playing (TX active)
         self._radio_port_details = omnirig_port_details()
         self._debug_var = tk.StringVar(value="Debug: -")
         self._radio_type_name_label: tk.Label | None = None
@@ -1345,13 +1348,20 @@ class RigMonitorWindow:
     def _on_btn_press(self, n: int) -> None:
         """Called when ESP32 extra button n (1–4) is pressed — play voice message."""
         cmd = self._rig.get_voice_msg_command(n)
-        if cmd:
-            ok = self._rig.send_cat_command(cmd)
-            msg = f"BTN {n}: {cmd.strip()} {'sent' if ok else 'FAILED (no CAT link)'}"
-        else:
-            msg = f"BTN {n}: no voice_msg_{n} configured for this radio"
-        self._btn_report_var.set(msg)
-        self._root.after(4000, lambda: self._btn_report_var.set(""))
+        if not cmd:
+            self._btn_report_var.set(f"BTN {n}: no voice_msg_{n} configured for this radio")
+            self._root.after(4000, lambda: self._btn_report_var.set(""))
+            return
+        ok = self._rig.send_cat_command(cmd)
+        if not ok:
+            self._btn_report_var.set(f"BTN {n}: FAILED (no CAT link)")
+            self._root.after(4000, lambda: self._btn_report_var.set(""))
+            return
+        # Command sent — start TX monitoring state machine
+        self._voice_btn_pending = n
+        self._voice_btn_deadline = time.monotonic() + 3.0
+        self._voice_tx_n = None
+        self._btn_report_var.set(f"MSG {n}: waiting...")
 
     def _on_set_split(self, enabled: bool) -> None:
         """Called when the Arduino button initiates a split ON or OFF."""
@@ -1472,6 +1482,32 @@ class RigMonitorWindow:
             self._freq_fail_count += 1
             if self._freq_fail_count >= self._freq_fail_threshold:
                 self._set_na_values()
+
+        # ── Voice message TX state machine ──────────────────────────────────────
+        if self._voice_btn_pending is not None or self._voice_tx_n is not None:
+            try:
+                tx_on = self._rig.read_tx_state()
+            except Exception:
+                tx_on = False
+            now = time.monotonic()
+            if self._voice_btn_pending is not None:
+                if tx_on:
+                    # TX confirmed — message is transmitting
+                    self._voice_tx_n = self._voice_btn_pending
+                    self._voice_btn_pending = None
+                    self._btn_report_var.set(f"MSG {self._voice_tx_n}: Transmitting...")
+                elif now >= self._voice_btn_deadline:
+                    # Timeout — radio never went to TX
+                    n = self._voice_btn_pending
+                    self._voice_btn_pending = None
+                    self._btn_report_var.set(f"MSG {n}: no TX detected")
+                    self._root.after(4000, lambda: self._btn_report_var.set(""))
+            elif self._voice_tx_n is not None and not tx_on:
+                # TX ended — playback finished
+                n = self._voice_tx_n
+                self._voice_tx_n = None
+                self._btn_report_var.set(f"MSG {n}: Done")
+                self._root.after(2000, lambda: self._btn_report_var.set(""))
 
         self._root.after(self._refresh_ms, self._refresh)
 
