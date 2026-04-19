@@ -1361,7 +1361,7 @@ class RigMonitorWindow:
         self._voice_btn_pending = n
         self._voice_btn_deadline = time.monotonic() + 3.0
         self._voice_tx_n = None
-        self._btn_report_var.set(f"MSG {n}: waiting...")
+        self._btn_report_var.set("")
 
     def _on_set_split(self, enabled: bool) -> None:
         """Called when the Arduino button initiates a split ON or OFF."""
