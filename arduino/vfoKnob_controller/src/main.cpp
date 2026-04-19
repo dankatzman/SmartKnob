@@ -4,10 +4,22 @@
 //   LCD SCL        → GPIO 22
 //   Encoder CLK    → GPIO 18
 //   Encoder DT     → GPIO 19
-//   Encoder SW     → GPIO 5
+//   Encoder SW     → GPIO 5   (short press = split on/off, long press = edit mode)
 //   LED RX (LED1)  → GPIO 25
 //   LED TX (LED2)  → GPIO 26
-//   Switch         → GPIO 27
+//   Switch RX/TX   → GPIO 27  (HIGH = knob tunes TX VFO, LOW = knob tunes RX VFO)
+//   Voice Btn 1    → GPIO 32
+//   Voice Btn 2    → GPIO 33
+//   Voice Btn 3    → GPIO 13
+//   Voice Btn 4    → GPIO 14
+//
+// Voice Message Buttons:
+//   Pressing one of the 4 extra buttons (GPIO 32/33/13/14) while in normal
+//   operating mode (not edit mode) sends BTN:1..BTN:4 over serial to Python.
+//   Python looks up the CAT command for the active radio in radio_profiles.ini
+//   and sends it via OmniRig SendCustomCommand.
+//   For the Yaesu FT-710 the commands are PB01; .. PB04; (Play Back voice
+//   message channel 1–4, from the FT-710 CAT Operation Reference Manual).
 // ─────────────────────────────────────────────────────────────────────────────
 
 #define LED_RX_PIN 25
