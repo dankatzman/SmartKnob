@@ -1329,14 +1329,19 @@ class RigMonitorWindow:
         current_rig = None
         pending_sep_last: tk.Label | None = None
 
+        active_rig_name = f"RIG{self._omnirig_rig_var.get()}"
+        omnirig_active  = self._last_omnirig_report == "Active"
+
         if self._radio_port_details:
             for port, is_primary, rig in self._radio_port_details:
                 is_first_of_new_rig = current_rig is not None and rig != current_rig
                 if is_first_of_new_rig and port_widget_refs.get(current_rig):
                     pending_sep_last = port_widget_refs[current_rig][-1]
                 current_rig = rig
+                # Blue only if this is the primary port of the active rig AND freq is received
+                is_blue = is_primary and rig == active_rig_name and omnirig_active
                 lbl = tk.Label(main_row, text=port,
-                               fg="#0055cc" if is_primary else "black",
+                               fg="#0055cc" if is_blue else "black",
                                font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0)
                 lbl.pack(side=tk.LEFT, padx=(12 if is_first_of_new_rig else 4, 0))
                 self._dyn_port_widgets.append(lbl)
@@ -1447,6 +1452,8 @@ class RigMonitorWindow:
                 if self._last_omnirig_report != "Not active":
                     self._set_omnirig_report("Not active", ok=False)
                     self._last_omnirig_report = "Not active"
+                    self._build_port_labels()
+                    self._root.after(200, self._place_rig_labels)
                 # Force "---" every cycle while not active — overrides any stale cache
                 self._vfo_a_var.set("---------")
                 self._vfo_b_var.set("---------")
@@ -1459,6 +1466,8 @@ class RigMonitorWindow:
             if self._last_omnirig_report != "Active":
                 self._set_omnirig_report("Active", ok=True)
                 self._last_omnirig_report = "Active"
+                self._build_port_labels()
+                self._root.after(200, self._place_rig_labels)
             self._radio_type_var.set(self._rig.get_radio_type())
 
             if time.monotonic() < self._freq_display_gate_until:
