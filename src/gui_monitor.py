@@ -1303,11 +1303,12 @@ class RigMonitorWindow:
 
     def _on_btn_press(self, n: int) -> None:
         """Called when ESP32 extra button n (1–4) is pressed — play or stop voice message."""
-        if self._voice_tx_n is not None or self._voice_btn_pending is not None:
-            # Message is playing (or just sent) — stop it
+        playing_n = self._voice_tx_n if self._voice_tx_n is not None else self._voice_btn_pending
+        if playing_n is not None:
+            # Any button pressed while playing — stop playback
             stop_cmd = self._rig.get_voice_stop_command()
-            play_cmd = self._rig.get_voice_msg_command(self._voice_tx_n or self._voice_btn_pending or n)
-            self._rig.send_cat_command(stop_cmd if stop_cmd else play_cmd)
+            if stop_cmd:
+                self._rig.send_cat_command(stop_cmd)
             self._voice_tx_n = None
             self._voice_btn_pending = None
             return
@@ -1315,7 +1316,7 @@ class RigMonitorWindow:
         if cmd:
             self._rig.send_cat_command(cmd)
             self._voice_btn_pending = n
-            self._voice_btn_deadline = time.monotonic() + 3.0
+            self._voice_btn_deadline = time.monotonic() + 30.0
 
     def _on_set_split(self, enabled: bool) -> None:
         """Called when the Arduino button initiates a split ON or OFF."""
@@ -1536,9 +1537,9 @@ class RigMonitorWindow:
                     self._voice_tx_n = self._voice_btn_pending
                     self._voice_btn_pending = None
                 elif now >= self._voice_btn_deadline:
-                    self._voice_btn_pending = None  # timeout — no TX detected
+                    self._voice_btn_pending = None
             elif self._voice_tx_n is not None and not tx_on:
-                self._voice_tx_n = None  # TX ended — playback finished
+                self._voice_tx_n = None
 
         # ── OmniRig port refresh — triggers instantly when OmniRig.ini changes ──
         mtime = omnirig_ini_mtime()

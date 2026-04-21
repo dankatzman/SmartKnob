@@ -846,7 +846,7 @@ class RigAdapter:
 		"""Return True if the radio is currently transmitting (TX ON)."""
 		if not self._is_wrapper_backend():
 			return False
-		tx_val = self._safe_int(self._get_param("TX"))
+		tx_val = self._safe_int(self._get_param("Tx"))
 		tx_on = self._safe_int(getattr(self._backend, "TX_ON", None))
 		if tx_val is not None and tx_on is not None:
 			return tx_val == tx_on
