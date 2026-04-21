@@ -1,9 +1,8 @@
-; Inno Setup script for Smart Knob v2.8
-; Save this as SmartKnobSetup.iss and open with Inno Setup Compiler
+; Inno Setup script for Smart Knob v2.8.3
 
 [Setup]
 AppName=Smart Knob
-AppVersion=2.8
+AppVersion=2.8.3
 DefaultDirName={commonpf}\SmartKnob
 DefaultGroupName=Smart Knob
 UninstallDisplayIcon={app}\smartknob.exe

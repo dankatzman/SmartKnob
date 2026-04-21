@@ -38,6 +38,7 @@ echo.
 echo [2/3] Copying EXE and data files to dist folder...
 copy /y "%OUTPUT_DIR%\smartknob.exe" "%~dp0dist\smartknob.exe"
 copy /y "%~dp0legalHFfreq.txt" "%~dp0dist\legalHFfreq.txt"
+copy /y "%~dp0radio_profiles.ini" "%~dp0dist\radio_profiles.ini"
 
 echo.
 echo [3/3] Building installer with Inno Setup...
