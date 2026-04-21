@@ -31,3 +31,6 @@ log_window_state.json
 
 # Temp files
 *.tmp.*
+
+# Lab/scratch directories
+arduino/nano_encoder_lab/
