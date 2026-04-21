@@ -117,7 +117,7 @@ from tkinter import ttk
 from typing import Any
 
 from rig_adapter import RigAdapter, load_legal_bands
-from serial_transport import SerialTransport, omnirig_port_details, invalidate_omnirig_cache
+from serial_transport import SerialTransport, omnirig_port_details, invalidate_omnirig_cache, omnirig_ini_mtime
 from version import __version__, DEBUG_MODE
 
 # Baud rate for the FTDI232 auxiliary serial port on the Arduino.
@@ -335,6 +335,7 @@ class RigMonitorWindow:
         self._knob_report_var = tk.StringVar(value="Knob: Not connected")
         self._radio_port_details = omnirig_port_details()
         self._last_port_check: float = 0.0
+        self._omnirig_ini_mtime: float = omnirig_ini_mtime()
         self._port_main_row: tk.Frame | None = None
         self._port_rig_sel_row: tk.Frame | None = None
         self._port_status_row: tk.Frame | None = None
@@ -1501,10 +1502,10 @@ class RigMonitorWindow:
             if self._freq_fail_count >= self._freq_fail_threshold:
                 self._set_na_values()
 
-        # ── Periodic OmniRig port refresh ───────────────────────────────────────
-        now_mono = time.monotonic()
-        if now_mono - self._last_port_check >= 5.0:
-            self._last_port_check = now_mono
+        # ── OmniRig port refresh — triggers instantly when OmniRig.ini changes ──
+        mtime = omnirig_ini_mtime()
+        if mtime != self._omnirig_ini_mtime:
+            self._omnirig_ini_mtime = mtime
             invalidate_omnirig_cache()
             new_details = omnirig_port_details()
             if new_details != self._radio_port_details:

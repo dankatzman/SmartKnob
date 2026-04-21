@@ -125,6 +125,21 @@ def invalidate_omnirig_cache() -> None:
     _omnirig_details_cache = None
 
 
+def omnirig_ini_mtime() -> float:
+    """Return the modification time of OmniRig.ini, or 0.0 if not found."""
+    import os
+    appdata = os.environ.get("APPDATA", "")
+    for path in (
+        os.path.join(appdata, "Afreet", "Products", "OmniRig", "OmniRig.ini"),
+        os.path.join(appdata, "Afreet", "OmniRig", "OmniRig.ini"),
+    ):
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            pass
+    return 0.0
+
+
 def omnirig_ports() -> set[str]:
     """Return set of radio COM ports configured in OmniRig — exclude these from Arduino scan."""
     return {port for port, _, _rig in omnirig_port_details()}
