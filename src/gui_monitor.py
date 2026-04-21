@@ -117,7 +117,7 @@ from tkinter import ttk
 from typing import Any
 
 from rig_adapter import RigAdapter, load_legal_bands
-from serial_transport import SerialTransport, omnirig_port_details
+from serial_transport import SerialTransport, omnirig_port_details, invalidate_omnirig_cache
 from version import __version__, DEBUG_MODE
 
 # Baud rate for the FTDI232 auxiliary serial port on the Arduino.
@@ -334,6 +334,13 @@ class RigMonitorWindow:
         self._omnirig_report_var = tk.StringVar(value="OmniRig: Checking...")
         self._knob_report_var = tk.StringVar(value="Knob: Not connected")
         self._radio_port_details = omnirig_port_details()
+        self._last_port_check: float = 0.0
+        self._port_main_row: tk.Frame | None = None
+        self._port_rig_sel_row: tk.Frame | None = None
+        self._port_status_row: tk.Frame | None = None
+        self._dyn_port_widgets: list[tk.Widget] = []   # port labels in main_row
+        self._dyn_rig_labels:  list[tk.Widget] = []    # "Rig 1/2" labels in rig_sel_row
+        self._dyn_separators:  list[tk.Widget] = []    # red lines in status_row
         self._debug_var = tk.StringVar(value="Debug: -")
         self._radio_type_name_label: tk.Label | None = None
         self._radio_type_value_label: tk.Label | None = None
@@ -548,9 +555,12 @@ class RigMonitorWindow:
                 rig_sel_row, txt, self._omnirig_rig_var, val, _on_rig_changed,
             ).pack(side=tk.LEFT, padx=(6, 0) if txt == "RIG1" else (2, 0))
 
-        # Main row: OmniRig + Radio + ports all packed left→right
+        # Main row: OmniRig status + port labels
         main_row = tk.Frame(status_row)
         main_row.pack(side=tk.TOP, fill=tk.X)
+        self._port_main_row    = main_row
+        self._port_rig_sel_row = rig_sel_row
+        self._port_status_row  = status_row
 
         self._omnirig_report_label = tk.Label(
             main_row,
@@ -564,53 +574,8 @@ class RigMonitorWindow:
         tk.Label(main_row, text="", padx=0, pady=0, bd=0).pack(
                      side=tk.LEFT, padx=(12, 2))
 
-        # port_widget_refs: rig -> list of port Label widgets (for rig-label placement)
-        port_widget_refs: dict[str, list[tk.Label]] = {}
-        # sep_pairs: (last_label_of_rig_before, first_label_of_rig_after) for midpoint placement
-        sep_pairs: list[tuple[tk.Label, tk.Label | None]] = []
-        current_rig = None
-        pending_sep_last: tk.Label | None = None  # last label of rig before the boundary
-        if self._radio_port_details:
-            for port, is_primary, rig in self._radio_port_details:
-                is_first_of_new_rig = current_rig is not None and rig != current_rig
-                if is_first_of_new_rig and port_widget_refs.get(current_rig):
-                    pending_sep_last = port_widget_refs[current_rig][-1]
-                current_rig = rig
-                lbl = tk.Label(main_row, text=port,
-                               fg="#0055cc" if is_primary else "black",
-                               font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0)
-                lbl.pack(side=tk.LEFT, padx=(12 if is_first_of_new_rig else 4, 0))
-                port_widget_refs.setdefault(rig, []).append(lbl)
-                if pending_sep_last is not None:
-                    sep_pairs.append((pending_sep_last, lbl))
-                    pending_sep_last = None
-        else:
-            tk.Label(main_row, text="-", fg="#0055cc",
-                     font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0).pack(side=tk.LEFT)
-
-        # After layout is computed: place rig name labels and full-height red separators
-        def _place_rig_labels(refs=port_widget_refs, hdr=rig_sel_row,
-                               srow=status_row, pairs=sep_pairs):
-            hdr.update_idletasks()  # ensure geometry is computed before measuring
-            total_h = srow.winfo_height()
-            # Rig name labels centered above their port groups, placed into rig_sel_row
-            for rig, labels in refs.items():
-                if not labels:
-                    continue
-                x1 = labels[0].winfo_rootx() - hdr.winfo_rootx()
-                x2 = labels[-1].winfo_rootx() + labels[-1].winfo_width() - hdr.winfo_rootx()
-                cx = (x1 + x2) // 2
-                rig_text = "Rig 1" if rig == "RIG1" else "Rig 2"
-                tk.Label(hdr, text=rig_text, fg="#0055cc",
-                         font=("Segoe UI", 8), padx=0, pady=0, bd=0).place(
-                             x=cx, y=0, anchor="n")
-            # Full-height red separator lines — 6px before first port of next rig
-            for last_lbl, first_lbl in pairs:
-                left_edge = first_lbl.winfo_rootx() - srow.winfo_rootx()
-                mx = left_edge - 6
-                tk.Frame(srow, width=2, height=total_h, bg="red").place(x=mx, y=0)
-
-        frame.after(200, _place_rig_labels)
+        self._build_port_labels()
+        frame.after(200, self._place_rig_labels)
 
         self._knob_report_label = tk.Label(
             frame,
@@ -1345,6 +1310,84 @@ class RigMonitorWindow:
         except Exception as exc:
             print(f"[_on_set_split] error: {exc}")
 
+    def _build_port_labels(self) -> None:
+        """Build (or rebuild) the port label widgets inside _port_main_row."""
+        for w in self._dyn_port_widgets:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._dyn_port_widgets.clear()
+
+        main_row = self._port_main_row
+        if main_row is None:
+            return
+
+        port_widget_refs: dict[str, list[tk.Label]] = {}
+        sep_pairs: list[tuple[tk.Label, tk.Label | None]] = []
+        current_rig = None
+        pending_sep_last: tk.Label | None = None
+
+        if self._radio_port_details:
+            for port, is_primary, rig in self._radio_port_details:
+                is_first_of_new_rig = current_rig is not None and rig != current_rig
+                if is_first_of_new_rig and port_widget_refs.get(current_rig):
+                    pending_sep_last = port_widget_refs[current_rig][-1]
+                current_rig = rig
+                lbl = tk.Label(main_row, text=port,
+                               fg="#0055cc" if is_primary else "black",
+                               font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0)
+                lbl.pack(side=tk.LEFT, padx=(12 if is_first_of_new_rig else 4, 0))
+                self._dyn_port_widgets.append(lbl)
+                port_widget_refs.setdefault(rig, []).append(lbl)
+                if pending_sep_last is not None:
+                    sep_pairs.append((pending_sep_last, lbl))
+                    pending_sep_last = None
+        else:
+            lbl = tk.Label(main_row, text="-", fg="#0055cc",
+                           font=("Segoe UI", 11, "bold"), padx=0, pady=0, bd=0)
+            lbl.pack(side=tk.LEFT)
+            self._dyn_port_widgets.append(lbl)
+
+        self._port_sep_pairs = sep_pairs
+        self._port_widget_refs = port_widget_refs
+
+    def _place_rig_labels(self) -> None:
+        """Place floating rig-name labels and red separators (called after layout is computed)."""
+        for w in self._dyn_rig_labels + self._dyn_separators:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._dyn_rig_labels.clear()
+        self._dyn_separators.clear()
+
+        hdr  = self._port_rig_sel_row
+        srow = self._port_status_row
+        refs = getattr(self, "_port_widget_refs", {})
+        pairs = getattr(self, "_port_sep_pairs", [])
+        if hdr is None or srow is None:
+            return
+
+        hdr.update_idletasks()
+        total_h = srow.winfo_height()
+        for rig, labels in refs.items():
+            if not labels:
+                continue
+            x1 = labels[0].winfo_rootx() - hdr.winfo_rootx()
+            x2 = labels[-1].winfo_rootx() + labels[-1].winfo_width() - hdr.winfo_rootx()
+            cx = (x1 + x2) // 2
+            rig_text = "Rig 1" if rig == "RIG1" else "Rig 2"
+            lbl = tk.Label(hdr, text=rig_text, fg="#0055cc",
+                           font=("Segoe UI", 8), padx=0, pady=0, bd=0)
+            lbl.place(x=cx, y=0, anchor="n")
+            self._dyn_rig_labels.append(lbl)
+        for last_lbl, first_lbl in pairs:
+            left_edge = first_lbl.winfo_rootx() - srow.winfo_rootx()
+            sep = tk.Frame(srow, width=2, height=total_h, bg="red")
+            sep.place(x=left_edge - 6, y=0)
+            self._dyn_separators.append(sep)
+
     def _refresh(self) -> None:
         # Check OmniRig status independently
         try:
@@ -1457,6 +1500,17 @@ class RigMonitorWindow:
             self._freq_fail_count += 1
             if self._freq_fail_count >= self._freq_fail_threshold:
                 self._set_na_values()
+
+        # ── Periodic OmniRig port refresh ───────────────────────────────────────
+        now_mono = time.monotonic()
+        if now_mono - self._last_port_check >= 5.0:
+            self._last_port_check = now_mono
+            invalidate_omnirig_cache()
+            new_details = omnirig_port_details()
+            if new_details != self._radio_port_details:
+                self._radio_port_details = new_details
+                self._build_port_labels()
+                self._root.after(200, self._place_rig_labels)
 
         self._root.after(self._refresh_ms, self._refresh)
 

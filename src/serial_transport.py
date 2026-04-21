@@ -119,6 +119,12 @@ def omnirig_port_details() -> list[tuple[str, bool, str]]:
     return _omnirig_details_cache
 
 
+def invalidate_omnirig_cache() -> None:
+    """Clear the port details cache so the next call to omnirig_port_details() re-reads OmniRig.ini."""
+    global _omnirig_details_cache
+    _omnirig_details_cache = None
+
+
 def omnirig_ports() -> set[str]:
     """Return set of radio COM ports configured in OmniRig — exclude these from Arduino scan."""
     return {port for port, _, _rig in omnirig_port_details()}
