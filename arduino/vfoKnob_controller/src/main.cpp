@@ -454,11 +454,14 @@ void updateLcd() {
 // ── Encoder ISR ───────────────────────────────────────────────────────────────
 // Fires on CHANGE of CLK or DT. Lookup table filters invalid transitions.
 // Accumulates ±1 per valid transition; fires a step on ±4 (= 1 detent).
+// Accumulator resets to 0 on direction reversal — first reverse detent always fires.
 void IRAM_ATTR encoderISR() {
   uint8_t newState = (digitalRead(ENC_CLK) << 1) | digitalRead(ENC_DT);
   int8_t delta = ENC_TABLE[(encState << 2) | newState];
   encState = newState;
   if (delta == 0) return;  // invalid/bounce transition — ignore
+  // Reset accumulator on direction reversal so the first reverse detent always fires.
+  if ((delta > 0 && encAccum < 0) || (delta < 0 && encAccum > 0)) encAccum = 0;
   encAccum += delta;
   int8_t dir = 0;
   if (encAccum <= -4) { dir =  1; encAccum = 0; }  // CW
