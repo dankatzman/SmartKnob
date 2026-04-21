@@ -598,10 +598,7 @@ class RigAdapter:
 			status = self._safe_int(self._get_param("Status"))
 
 			# OmniRig status 4 = OnLine (radio physically responding).
-			# Status 3 = port temporarily busy — return cached frequency to ride out the blip.
-			# Any other status means the radio is off or not communicating.
-			if status == 3 and self._freq_confirmed:
-				return self._state.freq_a_hz if selected_vfo == "A" else self._state.freq_b_hz
+			# Any other status means the radio is off or not communicating — clear display immediately.
 			if status != 4:
 				self._freq_confirmed = False
 				return None
