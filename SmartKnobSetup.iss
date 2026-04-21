@@ -2,7 +2,7 @@
 
 [Setup]
 AppName=Smart Knob
-AppVersion=2.8.3
+AppVersion=2.8.4
 DefaultDirName={commonpf}\SmartKnob
 DefaultGroupName=Smart Knob
 UninstallDisplayIcon={app}\smartknob.exe
