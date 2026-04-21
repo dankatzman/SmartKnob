@@ -852,6 +852,13 @@ class RigAdapter:
 			return tx_val == tx_on
 		return False
 
+	def get_voice_stop_command(self) -> Optional[str]:
+		"""Return the CAT command to stop voice message playback, or None."""
+		override = self._get_radio_profile_override()
+		if override is None:
+			return None
+		return override.get("voice_msg_stop") or None
+
 	def get_voice_msg_command(self, n: int) -> Optional[str]:
 		"""Return the CAT command string for voice message n (1–4), or None."""
 		override = self._get_radio_profile_override()

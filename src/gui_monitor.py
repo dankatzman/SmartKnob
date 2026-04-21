@@ -336,6 +336,9 @@ class RigMonitorWindow:
         self._radio_port_details = omnirig_port_details()
         self._last_port_check: float = 0.0
         self._omnirig_ini_mtime: float = omnirig_ini_mtime()
+        self._voice_btn_pending: int | None = None  # btn# waiting for TX to confirm
+        self._voice_btn_deadline: float = 0.0
+        self._voice_tx_n: int | None = None         # btn# currently playing (TX active)
         self._port_main_row: tk.Frame | None = None
         self._port_rig_sel_row: tk.Frame | None = None
         self._port_status_row: tk.Frame | None = None
@@ -1299,10 +1302,20 @@ class RigMonitorWindow:
         self._knob_status_until = time.monotonic() + 3.0
 
     def _on_btn_press(self, n: int) -> None:
-        """Called when ESP32 extra button n (1–4) is pressed — play voice message."""
+        """Called when ESP32 extra button n (1–4) is pressed — play or stop voice message."""
+        if self._voice_tx_n is not None or self._voice_btn_pending is not None:
+            # Message is playing (or just sent) — stop it
+            stop_cmd = self._rig.get_voice_stop_command()
+            play_cmd = self._rig.get_voice_msg_command(self._voice_tx_n or self._voice_btn_pending or n)
+            self._rig.send_cat_command(stop_cmd if stop_cmd else play_cmd)
+            self._voice_tx_n = None
+            self._voice_btn_pending = None
+            return
         cmd = self._rig.get_voice_msg_command(n)
         if cmd:
             self._rig.send_cat_command(cmd)
+            self._voice_btn_pending = n
+            self._voice_btn_deadline = time.monotonic() + 3.0
 
     def _on_set_split(self, enabled: bool) -> None:
         """Called when the Arduino button initiates a split ON or OFF."""
@@ -1510,6 +1523,22 @@ class RigMonitorWindow:
             self._freq_fail_count += 1
             if self._freq_fail_count >= self._freq_fail_threshold:
                 self._set_na_values()
+
+        # ── Voice message TX state machine ──────────────────────────────────────
+        if self._voice_btn_pending is not None or self._voice_tx_n is not None:
+            try:
+                tx_on = self._rig.read_tx_state()
+            except Exception:
+                tx_on = False
+            now = time.monotonic()
+            if self._voice_btn_pending is not None:
+                if tx_on:
+                    self._voice_tx_n = self._voice_btn_pending
+                    self._voice_btn_pending = None
+                elif now >= self._voice_btn_deadline:
+                    self._voice_btn_pending = None  # timeout — no TX detected
+            elif self._voice_tx_n is not None and not tx_on:
+                self._voice_tx_n = None  # TX ended — playback finished
 
         # ── OmniRig port refresh — triggers instantly when OmniRig.ini changes ──
         mtime = omnirig_ini_mtime()
